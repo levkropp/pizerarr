@@ -4,7 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>pizerarr</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/tailwind.js"></script>
+  <link href="/static/video-js.css" rel="stylesheet">
+  <script src="/static/video.min.js"></script>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     body { font-family: 'Inter', sans-serif; }
@@ -17,6 +19,12 @@
     .glass { background: rgba(255,255,255,0.05); backdrop-filter: blur(10px); }
     ::-webkit-scrollbar { height: 4px; width: 6px; }
     ::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+    /* video.js overrides */
+    #player-modal .video-js { width: 100% !important; height: 100% !important; }
+    .video-js .vjs-big-play-button { background: rgba(229,9,20,0.8) !important; border: none !important; border-radius: 50% !important; }
+    .video-js .vjs-play-progress { background: #e50914 !important; }
+    .video-js .vjs-slider:focus { box-shadow: none !important; }
+    .video-js .vjs-control-bar { background: rgba(0,0,0,0.7) !important; }
   </style>
 </head>
 <body class="min-h-screen">
@@ -97,8 +105,7 @@
       <span id="storage-free"></span>
     </div>
     <div class="w-full bg-neutral-800 rounded-full h-5 overflow-hidden relative">
-      <div id="storage-files-bar" class="h-full absolute left-0 top-0"></div>
-      <div id="storage-other-bar" class="h-full bg-neutral-600 absolute top-0" style="left:0"></div>
+      <div id="storage-files-bar" class="absolute inset-0"></div>
     </div>
     <div id="storage-legend" class="flex flex-wrap gap-3 mt-2 text-xs text-neutral-400"></div>
   </div>
@@ -108,9 +115,46 @@
 </div>
 
 <!-- Video Player Modal -->
-<div id="player-modal" class="fixed inset-0 z-50 bg-black/95 hidden flex items-center justify-center">
-  <button onclick="closePlayer()" class="absolute top-4 right-6 text-3xl text-white hover:text-red-500">&times;</button>
-  <video id="video-player" controls class="max-w-full max-h-full" crossorigin="anonymous"></video>
+<div id="player-modal" class="fixed inset-0 z-50 bg-black hidden">
+  <button id="player-close-btn" onclick="closePlayer()" class="absolute top-4 right-6 z-50 text-3xl text-white hover:text-red-500 hidden" style="text-shadow:0 0 8px black">&times;</button>
+  <button id="player-subs-btn" onclick="openSubsFromPlayer()" class="absolute top-4 left-6 z-50 text-sm text-white bg-black/50 hover:bg-black/80 px-3 py-1 rounded hidden" style="text-shadow:0 0 8px black">Subtitles</button>
+  <div id="player-container" style="width:100%;height:100%">
+    <video id="video-player" class="video-js vjs-default-skin vjs-big-play-centered" controls preload="auto" crossorigin="anonymous" style="width:100%;height:100%"></video>
+  </div>
+</div>
+
+<!-- Playback Options Popup -->
+<div id="play-options-modal" class="fixed inset-0 z-50 bg-black/80 hidden flex items-center justify-center p-4">
+  <div class="bg-neutral-900 rounded-xl max-w-md w-full p-6 relative">
+    <button onclick="closePlayOptions()" class="absolute top-4 right-4 text-neutral-400 hover:text-white text-xl">&times;</button>
+    <h3 class="text-lg font-semibold mb-2">Can't play this format</h3>
+    <p class="text-sm text-neutral-400 mb-4" id="play-options-filename"></p>
+    <div id="play-options-content" class="space-y-3">
+      <button onclick="startConvert()" class="w-full bg-red-600 hover:bg-red-700 px-4 py-3 rounded-lg text-sm font-medium transition text-left">
+        Convert to streamable format (H.264 HLS)<br>
+        <span class="text-xs text-red-300">Takes a while on Pi — runs in background</span>
+      </button>
+      <a id="play-options-vlc" href="#" class="block w-full bg-neutral-800 hover:bg-neutral-700 px-4 py-3 rounded-lg text-sm font-medium transition text-left text-white">
+        Open file URL directly<br>
+        <span class="text-xs text-neutral-400">Copy link and open in VLC or another player</span>
+      </a>
+    </div>
+    <!-- Transcode progress (shown after clicking Convert) -->
+    <div id="transcode-progress" class="hidden mt-4">
+      <div class="flex justify-between text-sm mb-1">
+        <span>Converting...</span>
+        <span id="transcode-pct">0%</span>
+      </div>
+      <div class="w-full bg-neutral-800 rounded-full h-3 overflow-hidden">
+        <div id="transcode-bar" class="progress-bar h-full rounded-full transition-all duration-500" style="width: 0%"></div>
+      </div>
+      <textarea id="transcode-log" readonly class="w-full mt-3 bg-black text-green-400 text-xs font-mono p-3 rounded-lg h-40 resize-none border border-neutral-700 focus:outline-none" spellcheck="false"></textarea>
+      <div class="flex justify-between items-center mt-2">
+        <p class="text-xs text-neutral-500">You can close this and come back — conversion continues in the background.</p>
+        <button onclick="cancelConvert()" class="text-xs px-3 py-1 bg-red-900 hover:bg-red-800 text-red-300 rounded ml-3 whitespace-nowrap">Cancel</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Subtitle Search Modal -->
@@ -390,7 +434,6 @@ async function refreshLibrary() {
         legendHtml += `<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#525252;margin-right:4px"></span>System (${formatBytes(otherUsed)})</span>`;
       }
       $('#storage-files-bar').innerHTML = segments;
-      $('#storage-other-bar').style.display = 'none';
       $('#storage-legend').innerHTML = legendHtml;
     }
 
@@ -400,20 +443,31 @@ async function refreshLibrary() {
     }
     el.innerHTML = lib.files.map((f, i) => {
       const color = FILE_COLORS[i % FILE_COLORS.length];
+      const codecBadge = f.browser_playable
+        ? `<span class="text-green-500">${f.video_codec.toUpperCase()}</span>`
+        : `<span class="text-amber-500">${f.video_codec.toUpperCase()}</span>`;
+      const hlsBadge = f.hls_path ? '<span class="text-green-400 ml-1">HLS</span>' : '';
+      const playArgs = `'${esc(f.path)}', ${f.has_subs ? `'${esc(f.srt_path)}'` : 'null'}, '${esc(f.filename)}', '${esc(f.source)}', ${f.browser_playable}, ${f.hls_path ? `'${esc(f.hls_path)}'` : 'null'}`;
       return `
       <div class="flex items-center justify-between bg-neutral-900 rounded-lg px-4 py-3 hover:bg-neutral-800 transition gap-3">
-        <div style="width:4px;height:36px;border-radius:2px;background:${color};flex-shrink:0"></div>
-        <div class="min-w-0 flex-1 cursor-pointer" onclick="playVideo('${esc(f.path)}', ${f.has_subs ? `'${esc(f.srt_path)}'` : 'null'})">
+        <div style="width:4px;height:42px;border-radius:2px;background:${color};flex-shrink:0"></div>
+        <div class="min-w-0 flex-1 cursor-pointer" onclick="playVideo(${playArgs})">
           <div class="text-sm font-medium truncate">${esc(f.filename)}</div>
-          <div class="text-xs text-neutral-500 mt-1">
-            ${f.size_display}
-            ${f.has_subs ? '<span class="text-green-500 ml-2">CC</span>' : ''}
+          <div class="text-xs text-neutral-500 mt-1 flex flex-wrap gap-x-2">
+            <span>${f.size_display}</span>
+            <span class="text-neutral-600">|</span>
+            ${codecBadge}
+            <span class="text-neutral-600">${f.audio_codec}</span>
+            ${f.resolution ? `<span class="text-neutral-600">${f.resolution}</span>` : ''}
+            <span class="text-neutral-600">.${f.container}</span>
+            ${hlsBadge}
+            ${f.has_subs ? '<span class="text-green-500">CC</span>' : ''}
           </div>
         </div>
         <button onclick="openSubSearch('${esc(f.filename)}', '${esc(f.path)}')" class="text-xs px-2 py-1 rounded ${f.has_subs ? 'bg-green-800 text-green-200' : 'bg-neutral-700 text-neutral-300'} hover:bg-neutral-600 transition whitespace-nowrap" title="Get subtitles">
           ${f.has_subs ? 'CC' : 'Subs'}
         </button>
-        <span class="text-red-500 text-lg cursor-pointer" onclick="playVideo('${esc(f.path)}', ${f.has_subs ? `'${esc(f.srt_path)}'` : 'null'})">▶</span>
+        <span class="text-red-500 text-lg cursor-pointer" onclick="playVideo(${playArgs})">▶</span>
       </div>`;
     }).join('');
   } catch(e) {
@@ -421,31 +475,245 @@ async function refreshLibrary() {
   }
 }
 
-// --- Video Player ---
-function playVideo(path, srtPath) {
-  const player = $('#video-player');
-  // Remove old tracks
-  player.querySelectorAll('track').forEach(t => t.remove());
-  player.src = '/media/' + encodeURIComponent(path);
-  if (srtPath) {
-    const track = document.createElement('track');
-    track.kind = 'subtitles';
-    track.label = 'English';
-    track.srclang = 'en';
-    track.src = '/media/' + encodeURIComponent(srtPath);
-    track.default = true;
-    player.appendChild(track);
+// --- Video Player (video.js) ---
+function encodePath(p) {
+  return p.split('/').map(encodeURIComponent).join('/');
+}
+
+let vjsPlayer = null;
+let currentPlayFile = null;
+
+function initPlayer() {
+  if (vjsPlayer) return;
+  const isTV = /pizerarr-tv|Android TV|AFT/i.test(navigator.userAgent);
+  try {
+    vjsPlayer = videojs('video-player', {
+      controls: true,
+      autoplay: false,
+      preload: 'auto',
+      playbackRates: [0.5, 1, 1.25, 1.5, 2],
+      controlBar: {
+        volumePanel: isTV ? false : { inline: true },
+        children: [
+          'playToggle',
+          ...(isTV ? ['muteToggle'] : ['volumePanel']),
+          'currentTimeDisplay',
+          'timeDivider',
+          'durationDisplay',
+          'progressControl',
+          'playbackRateMenuButton',
+          'subsCapsButton',
+          'fullscreenToggle',
+        ],
+      },
+      html5: {
+        vhs: { overrideNative: true },
+        nativeAudioTracks: false,
+        nativeVideoTracks: false,
+      },
+    });
+  } catch(e) {
+    console.error('video.js init failed:', e);
+    vjsPlayer = null;
   }
+}
+
+function playVideo(path, srtPath, filename, source, browserPlayable, hlsPath) {
+  currentPlayFile = {
+    path, srtPath,
+    filename: filename || path.split('/').pop(),
+    source: source || 'media',
+    browserPlayable: browserPlayable !== false,
+    hlsPath: hlsPath || null,
+  };
+
+  const f = currentPlayFile;
+
+  if (f.hlsPath) {
+    startPlayer('/media/' + encodePath(f.hlsPath), 'application/x-mpegURL', f.srtPath);
+    return;
+  }
+
+  if (f.browserPlayable) {
+    const ext = f.filename.split('.').pop().toLowerCase();
+    const types = { mp4: 'video/mp4', webm: 'video/webm', m4v: 'video/mp4' };
+    startPlayer('/media/' + encodePath(f.path), types[ext] || 'video/mp4', f.srtPath);
+    return;
+  }
+
+  showPlayOptions();
+}
+
+function startPlayer(src, type, srtPath) {
+  // Show modal first so the element is visible for video.js measurement
   $('#player-modal').classList.remove('hidden');
-  player.play();
+
+  // Small delay to let the DOM render before init
+  setTimeout(() => {
+    initPlayer();
+
+    if (vjsPlayer) {
+      // Remove old text tracks
+      try {
+        const oldTracks = vjsPlayer.remoteTextTracks();
+        for (let i = oldTracks.length - 1; i >= 0; i--) {
+          vjsPlayer.removeRemoteTextTrack(oldTracks[i]);
+        }
+      } catch(e) {}
+
+      vjsPlayer.src({ src, type });
+
+      if (srtPath) {
+        vjsPlayer.addRemoteTextTrack({
+          kind: 'subtitles',
+          label: 'English',
+          srclang: 'en',
+          src: '/media/' + encodePath(srtPath),
+          default: true,
+        }, false);
+      }
+
+      vjsPlayer.play().catch(() => {});
+      setTimeout(() => vjsPlayer.el().focus(), 200);
+
+      // Show close + subs buttons on non-TV
+      const isTV = /pizerarr-tv|AFT/i.test(navigator.userAgent);
+      $('#player-close-btn').classList.toggle('hidden', isTV);
+      $('#player-subs-btn').classList.remove('hidden');
+    } else {
+      // Fallback: raw <video> element if video.js failed to load
+      const el = $('#video-player');
+      el.src = src;
+      el.play().catch(() => {});
+    }
+  }, 100);
+}
+
+// Called from Android back button — returns true if something was closed
+function handleBack() {
+  // Close player if open
+  if (!$('#player-modal').classList.contains('hidden')) {
+    closePlayer();
+    return true;
+  }
+  // Close play options popup
+  if (!$('#play-options-modal').classList.contains('hidden')) {
+    closePlayOptions();
+    return true;
+  }
+  // Close subtitle search
+  if (!$('#subs-modal').classList.contains('hidden')) {
+    closeSubSearch();
+    return true;
+  }
+  return false;
 }
 
 function closePlayer() {
-  const player = $('#video-player');
-  player.pause();
-  player.src = '';
-  player.querySelectorAll('track').forEach(t => t.remove());
+  if (vjsPlayer) {
+    try {
+      vjsPlayer.pause();
+      vjsPlayer.reset();
+    } catch(e) {}
+  } else {
+    const el = $('#video-player');
+    if (el) { el.pause(); el.src = ''; }
+  }
   $('#player-modal').classList.add('hidden');
+  $('#player-close-btn').classList.add('hidden');
+  $('#player-subs-btn').classList.add('hidden');
+}
+
+// --- Play Options Popup ---
+function showPlayOptions() {
+  const f = currentPlayFile;
+  $('#play-options-filename').textContent = f.filename;
+  const fileUrl = location.origin + '/media/' + encodePath(f.path);
+  $('#play-options-vlc').href = fileUrl;
+  const isAndroid = /Android|pizerarr-tv/i.test(navigator.userAgent);
+  const vlcBtn = $('#play-options-vlc');
+  if (isAndroid) {
+    vlcBtn.href = `intent:${fileUrl}#Intent;type=video/*;package=org.videolan.vlc;S.title=${encodeURIComponent(f.filename)};end`;
+    vlcBtn.innerHTML = 'Open in VLC<br><span class="text-xs text-neutral-400">Launches VLC app on this device</span>';
+  } else {
+    vlcBtn.href = fileUrl;
+    vlcBtn.innerHTML = 'Copy video URL<br><span class="text-xs text-neutral-400">Open in VLC or any media player</span>';
+    vlcBtn.onclick = (e) => {
+      e.preventDefault();
+      const ta = document.createElement('textarea');
+      ta.value = fileUrl;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      vlcBtn.innerHTML = 'Copied!<br><span class="text-xs text-neutral-400">' + esc(fileUrl) + '</span>';
+      return false;
+    };
+  }
+  $('#play-options-content').classList.remove('hidden');
+  $('#transcode-progress').classList.add('hidden');
+  $('#play-options-modal').classList.remove('hidden');
+}
+
+function closePlayOptions() {
+  $('#play-options-modal').classList.add('hidden');
+  if (transcodeInterval) { clearInterval(transcodeInterval); transcodeInterval = null; }
+}
+
+async function cancelConvert() {
+  if (!currentPlayFile) return;
+  await fetch('/api/transcode/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename: currentPlayFile.filename }),
+  });
+  closePlayOptions();
+}
+
+let transcodeInterval = null;
+async function startConvert() {
+  const f = currentPlayFile;
+  $('#play-options-content').classList.add('hidden');
+  $('#transcode-progress').classList.remove('hidden');
+
+  await fetch('/api/transcode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename: f.filename, path: f.path, source: f.source }),
+  });
+
+  // Poll progress
+  transcodeInterval = setInterval(async () => {
+    try {
+      const res = await fetch('/api/transcode/status?filename=' + encodeURIComponent(f.filename));
+      const data = await res.json();
+      const pct = data.progress_pct || 0;
+      $('#transcode-pct').textContent = pct.toFixed(1) + '%';
+      $('#transcode-bar').style.width = pct + '%';
+
+      // Update log console
+      if (data.log && data.log.length) {
+        const logEl = $('#transcode-log');
+        logEl.value = data.log.join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      if (data.status === 'Done') {
+        clearInterval(transcodeInterval);
+        transcodeInterval = null;
+        closePlayOptions();
+        if (data.playlist) {
+          startPlayer('/media/' + encodePath(data.playlist), 'application/x-mpegURL', f.srtPath);
+        }
+      } else if (data.status && typeof data.status === 'object') {
+        // Failed is serialized as {"Failed": "message"}
+        clearInterval(transcodeInterval);
+        $('#transcode-pct').textContent = 'Failed';
+      }
+    } catch(e) {}
+  }, 3000);
 }
 
 // --- Subtitle Search ---
@@ -465,19 +733,21 @@ function closeSubSearch() {
   $('#subs-modal').classList.add('hidden');
 }
 
+function openSubsFromPlayer() {
+  if (!currentPlayFile) return;
+  // Pause playback while picking subs
+  if (vjsPlayer) vjsPlayer.pause();
+  openSubSearch(currentPlayFile.filename, currentPlayFile.path);
+}
+
 async function searchSubs() {
   const q = $('#subs-search-input').value.trim();
   if (!q) return;
   $('#subs-results').innerHTML = '<div class="text-neutral-500 text-center py-4"><div class="spinner mx-auto mb-2"></div>Searching...</div>';
   try {
-    // Search OpenSubtitles directly from the browser (CORS allowed)
-    const encoded = q.replace(/[^a-zA-Z0-9]/g, '-');
-    const res = await fetch(
-      `https://rest.opensubtitles.org/search/query-${encoded}/sublanguageid-eng`,
-      { headers: { 'User-Agent': 'TemporaryUserAgent' } }
-    );
-    const raw = await res.json();
-    const subs = raw.slice(0, 10);
+    const res = await fetch('/api/search/subs?q=' + encodeURIComponent(q));
+    const subs = await res.json();
+    if (subs.error) throw new Error(subs.error);
     if (!subs.length) {
       $('#subs-results').innerHTML = '<p class="text-neutral-500 text-center py-4">No subtitles found</p>';
       return;
@@ -485,10 +755,10 @@ async function searchSubs() {
     $('#subs-results').innerHTML = subs.map(s => `
       <div class="flex items-center justify-between bg-neutral-800 rounded-lg px-3 py-2 gap-3">
         <div class="min-w-0 flex-1">
-          <div class="text-xs font-medium truncate">${esc(s.SubFileName)}</div>
-          <div class="text-xs text-neutral-500">${s.LanguageName} · ${s.SubFormat} · ${s.SubDownloadsCnt} downloads</div>
+          <div class="text-xs font-medium truncate">${esc(s.filename)}</div>
+          <div class="text-xs text-neutral-500">${s.language} · ${s.format}</div>
         </div>
-        <button onclick="downloadSub(this, '${esc(s.SubDownloadLink)}')" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-xs font-medium transition whitespace-nowrap">Download</button>
+        <button onclick="downloadSub(this, '${esc(s.download_url)}')" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-xs font-medium transition whitespace-nowrap">Download</button>
       </div>
     `).join('');
   } catch(e) {
@@ -500,32 +770,30 @@ async function downloadSub(btn, downloadUrl) {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
   try {
-    // Fetch the gzipped subtitle from OpenSubtitles via browser
-    const res = await fetch(downloadUrl);
-    const blob = await res.blob();
-
-    // Decompress gzip
-    let srtText;
-    if (typeof DecompressionStream !== 'undefined') {
-      const ds = new DecompressionStream('gzip');
-      const decompressed = blob.stream().pipeThrough(ds);
-      srtText = await new Response(decompressed).text();
-    } else {
-      // Fallback: try as plain text
-      srtText = await blob.text();
-    }
-
-    // Send the raw .srt text to pizerarr to save next to the video
-    const saveRes = await fetch('/api/subs/download', {
+    const res = await fetch('/api/subs/download', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ srt_content: srtText, video_path: subsVideoPath }),
+      body: JSON.stringify({ download_url: downloadUrl, video_path: subsVideoPath }),
     });
-    const data = await saveRes.json();
+    const data = await res.json();
     if (data.status === 'ok') {
       btn.textContent = 'Done!';
       btn.classList.replace('bg-green-700', 'bg-green-900');
       refreshLibrary();
+      // If player is open, reload subs
+      if (vjsPlayer && !$('#player-modal').classList.contains('hidden')) {
+        const srtPath = subsVideoPath.replace(/\.[^.]+$/, '.srt');
+        try {
+          const oldTracks = vjsPlayer.remoteTextTracks();
+          for (let i = oldTracks.length - 1; i >= 0; i--) {
+            vjsPlayer.removeRemoteTextTrack(oldTracks[i]);
+          }
+        } catch(e) {}
+        vjsPlayer.addRemoteTextTrack({
+          kind: 'subtitles', label: 'English', srclang: 'en',
+          src: '/media/' + encodePath(srtPath), default: true,
+        }, false);
+      }
     } else {
       btn.textContent = 'Failed';
     }
@@ -546,6 +814,13 @@ function formatBytes(b) {
   if (b >= 1048576) return (b/1048576).toFixed(1) + ' MB';
   return Math.round(b/1024) + ' KB';
 }
+
+// --- Keyboard ---
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' || e.key === 'Backspace') {
+    if (handleBack()) e.preventDefault();
+  }
+});
 
 // --- Init ---
 loadTrending();

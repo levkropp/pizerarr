@@ -16,6 +16,18 @@ pub struct MediaFile {
     pub size_display: String,
     pub has_subs: bool,
     pub srt_path: Option<String>,
+    /// Video codec (e.g. "h264", "hevc", "vp9")
+    pub video_codec: String,
+    /// Audio codec (e.g. "aac", "ac3", "opus")
+    pub audio_codec: String,
+    /// Resolution (e.g. "1920x1080")
+    pub resolution: String,
+    /// Container format (e.g. "mkv", "mp4")
+    pub container: String,
+    /// Whether this file can be played natively in a browser
+    pub browser_playable: bool,
+    /// HLS playlist path if a transcoded version exists
+    pub hls_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,9 +52,9 @@ impl Library {
         let mut files = Vec::new();
 
         // Scan both directories
-        Self::scan_dir(media_dir, "media", &mut files).await;
+        Self::scan_dir(media_dir, "media", media_dir, &mut files).await;
         if download_dir != media_dir {
-            Self::scan_dir(download_dir, "downloads", &mut files).await;
+            Self::scan_dir(download_dir, "downloads", media_dir, &mut files).await;
         }
 
         files.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()));
@@ -52,11 +64,11 @@ impl Library {
         Library { files, storage }
     }
 
-    async fn scan_dir(dir: &Path, source: &str, files: &mut Vec<MediaFile>) {
-        Self::scan_recursive(dir, dir, source, files).await;
+    async fn scan_dir(dir: &Path, source: &str, media_dir: &Path, files: &mut Vec<MediaFile>) {
+        Self::scan_recursive(dir, dir, source, media_dir, files).await;
     }
 
-    async fn scan_recursive(base: &Path, dir: &Path, source: &str, files: &mut Vec<MediaFile>) {
+    async fn scan_recursive(base: &Path, dir: &Path, source: &str, media_dir: &Path, files: &mut Vec<MediaFile>) {
         let mut entries = match tokio::fs::read_dir(dir).await {
             Ok(e) => e,
             Err(_) => return,
@@ -65,7 +77,7 @@ impl Library {
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if path.is_dir() {
-                Box::pin(Self::scan_recursive(base, &path, source, files)).await;
+                Box::pin(Self::scan_recursive(base, &path, source, media_dir, files)).await;
             } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if VIDEO_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
                     let size = tokio::fs::metadata(&path)
@@ -96,12 +108,30 @@ impl Library {
                     } else {
                         rel_path
                     };
+                    let ext_lower = ext.to_lowercase();
+                    let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+                    // Probe codec info
+                    let probe = probe_video(&path).await;
+                    let video_codec = probe.0;
+                    let audio_codec = probe.1;
+                    let resolution = probe.2;
+                    let container = ext_lower.clone();
+
+                    // Browser can play H.264/VP8/VP9 in MP4/WebM containers
+                    let browser_playable = matches!(container.as_str(), "mp4" | "webm" | "m4v")
+                        && matches!(video_codec.as_str(), "h264" | "vp8" | "vp9" | "");
+
+                    let hls_path = crate::transcode::hls_playlist_path(media_dir, &fname)
+                        .map(|p| {
+                            p.strip_prefix(media_dir)
+                                .unwrap_or(&p)
+                                .to_string_lossy()
+                                .to_string()
+                        });
+
                     files.push(MediaFile {
-                        filename: path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string(),
+                        filename: fname,
                         path: serve_path,
                         source: source.to_string(),
                         size_bytes: size,
@@ -114,6 +144,12 @@ impl Library {
                                 p
                             }
                         }),
+                        video_codec,
+                        audio_codec,
+                        resolution,
+                        container,
+                        browser_playable,
+                        hls_path,
                     });
                 }
             }
@@ -157,6 +193,54 @@ fn get_storage_info(path: &Path) -> StorageInfo {
             used_pct: 0.0,
         }
     }
+}
+
+/// Probe video file for codec and resolution info via ffprobe
+async fn probe_video(path: &Path) -> (String, String, String) {
+    let output = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v", "quiet",
+            "-show_entries", "stream=codec_name,codec_type,width,height",
+            "-of", "csv=p=0",
+            &path.to_string_lossy(),
+        ])
+        .output()
+        .await;
+
+    let output = match output {
+        Ok(o) => o,
+        Err(_) => return ("unknown".into(), "unknown".into(), "".into()),
+    };
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut video_codec = String::new();
+    let mut audio_codec = String::new();
+    let mut resolution = String::new();
+
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() >= 2 {
+            let codec = parts[0].trim();
+            let ctype = parts[1].trim();
+            if ctype == "video" && video_codec.is_empty() {
+                video_codec = codec.to_string();
+                if parts.len() >= 4 {
+                    let w = parts[2].trim();
+                    let h = parts[3].trim();
+                    if !w.is_empty() && !h.is_empty() {
+                        resolution = format!("{}x{}", w, h);
+                    }
+                }
+            } else if ctype == "audio" && audio_codec.is_empty() {
+                audio_codec = codec.to_string();
+            }
+        }
+    }
+
+    if video_codec.is_empty() { video_codec = "unknown".into(); }
+    if audio_codec.is_empty() { audio_codec = "unknown".into(); }
+
+    (video_codec, audio_codec, resolution)
 }
 
 fn format_size(bytes: u64) -> String {

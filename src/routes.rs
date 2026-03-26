@@ -2,6 +2,7 @@ use crate::search;
 use crate::subs;
 use crate::tmdb;
 use crate::torrent;
+use crate::transcode;
 use crate::AppState;
 
 use axum::extract::{Path, Query, State};
@@ -32,6 +33,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/magnet/1337x", get(api_fetch_1337x_magnet))
         .route("/api/library", get(api_library))
         .route("/api/subs/download", post(api_download_sub))
+        .route("/api/transcode", post(api_start_transcode))
+        .route("/api/transcode/status", get(api_transcode_status))
+        .route("/api/transcode/cancel", post(api_cancel_transcode))
         .route("/static/{*path}", get(serve_static))
         .nest_service("/media/dl", ServeDir::new(state.download_dir.clone()))
         .nest_service("/media", ServeDir::new(state.media_dir.clone()))
@@ -114,8 +118,8 @@ async fn api_search_subs(
 
 #[derive(Deserialize)]
 struct SaveSubBody {
-    /// Raw .srt content (browser fetches + decompresses from OpenSubtitles)
-    srt_content: String,
+    /// OpenSubtitles download URL (server fetches + decompresses)
+    download_url: String,
     /// Path relative to media dir where the video lives
     video_path: String,
 }
@@ -124,7 +128,6 @@ async fn api_download_sub(
     State(state): State<Arc<AppState>>,
     Json(body): Json<SaveSubBody>,
 ) -> Response {
-    // dl/ prefix means the file is in download_dir
     let video = if let Some(rel) = body.video_path.strip_prefix("dl/") {
         state.download_dir.join(rel)
     } else {
@@ -132,18 +135,22 @@ async fn api_download_sub(
     };
     let srt_path = video.with_extension("srt");
 
-    match tokio::fs::write(&srt_path, &body.srt_content).await {
-        Ok(()) => Json(serde_json::json!({
-            "status": "ok",
-            "path": srt_path.to_string_lossy()
-        }))
-        .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+    match subs::download_to(&state.http_client, &body.download_url, &srt_path).await {
+        Ok(()) => {}
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
     }
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "path": srt_path.to_string_lossy()
+    }))
+    .into_response()
 }
 
 async fn api_trending(State(state): State<Arc<AppState>>) -> Json<Vec<tmdb::MetadataItem>> {
@@ -218,4 +225,75 @@ async fn api_fetch_1337x_magnet(Query(params): Query<MagnetQuery>) -> Response {
 async fn api_library(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let lib = state.library.read().await;
     Json(lib.clone())
+}
+
+// --- Transcode ---
+
+#[derive(Deserialize)]
+struct TranscodeBody {
+    filename: String,
+    path: String,
+    source: String,
+}
+
+async fn api_start_transcode(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TranscodeBody>,
+) -> Response {
+    let source_path = if body.source == "downloads" {
+        state.download_dir.join(
+            body.path.strip_prefix("dl/").unwrap_or(&body.path),
+        )
+    } else {
+        state.media_dir.join(&body.path)
+    };
+
+    transcode::queue_transcode(
+        &state.transcode_jobs,
+        &state.media_dir,
+        &source_path,
+        &body.filename,
+    )
+    .await;
+
+    Json(serde_json::json!({ "status": "queued" })).into_response()
+}
+
+#[derive(Deserialize)]
+struct TranscodeStatusQuery {
+    filename: String,
+}
+
+async fn api_transcode_status(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TranscodeStatusQuery>,
+) -> Response {
+    let jobs = state.transcode_jobs.read().await;
+    if let Some(job) = jobs.get(&params.filename) {
+        Json(job.clone()).into_response()
+    } else {
+        // Check if HLS already exists
+        if transcode::hls_playlist_path(&state.media_dir, &params.filename).is_some() {
+            Json(serde_json::json!({
+                "status": "Done",
+                "progress_pct": 100.0,
+            }))
+            .into_response()
+        } else {
+            Json(serde_json::json!({ "status": "none" })).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CancelBody {
+    filename: String,
+}
+
+async fn api_cancel_transcode(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CancelBody>,
+) -> Response {
+    transcode::cancel(&state.transcode_jobs, &state.media_dir, &body.filename).await;
+    Json(serde_json::json!({ "status": "cancelled" })).into_response()
 }
