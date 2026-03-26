@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-neutral-950 text-white">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pizerarr</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    body { font-family: 'Inter', sans-serif; }
+    .card:hover { transform: scale(1.05); }
+    .card { transition: transform 0.2s ease; }
+    .tab-active { border-bottom: 3px solid #e50914; color: white; }
+    .spinner { border: 3px solid rgba(255,255,255,0.1); border-top-color: #e50914; border-radius: 50%; width: 24px; height: 24px; animation: spin 0.8s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .progress-bar { background: linear-gradient(90deg, #e50914, #ff6b6b); }
+    .glass { background: rgba(255,255,255,0.05); backdrop-filter: blur(10px); }
+    ::-webkit-scrollbar { height: 4px; width: 6px; }
+    ::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<!-- Nav -->
+<nav class="sticky top-0 z-50 glass border-b border-neutral-800 px-6 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-6">
+    <h1 class="text-2xl font-bold text-red-600 tracking-tight">pizerarr</h1>
+    <button onclick="showTab('home')" id="tab-home" class="tab-active px-2 py-1 text-sm font-medium text-neutral-400 hover:text-white transition">Home</button>
+    <button onclick="showTab('search')" id="tab-search" class="px-2 py-1 text-sm font-medium text-neutral-400 hover:text-white transition">Search</button>
+    <button onclick="showTab('downloads')" id="tab-downloads" class="px-2 py-1 text-sm font-medium text-neutral-400 hover:text-white transition">Downloads</button>
+    <button onclick="showTab('library')" id="tab-library" class="px-2 py-1 text-sm font-medium text-neutral-400 hover:text-white transition">Library</button>
+  </div>
+</nav>
+
+<!-- Home Tab -->
+<div id="view-home" class="p-6">
+  <h2 class="text-xl font-semibold mb-4">Trending Movies</h2>
+  <div id="trending-movies" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4 mb-8">
+    <div class="col-span-full text-neutral-500 text-center py-8">
+      <div class="spinner mx-auto mb-3"></div>
+      Loading...
+    </div>
+  </div>
+  <h2 class="text-xl font-semibold mb-4">Top TV Shows</h2>
+  <div id="trending-shows" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
+    <div class="col-span-full text-neutral-500 text-center py-8">
+      <div class="spinner mx-auto mb-3"></div>
+      Loading...
+    </div>
+  </div>
+</div>
+
+<!-- Search Tab -->
+<div id="view-search" class="p-6 hidden">
+  <div class="max-w-2xl mx-auto mb-8">
+    <div class="flex gap-2">
+      <input id="search-input" type="text" placeholder="Search movies, TV shows..."
+        class="flex-1 bg-neutral-900 border border-neutral-700 rounded-lg px-4 py-3 text-white placeholder-neutral-500 focus:outline-none focus:border-red-600 transition"
+        onkeydown="if(event.key==='Enter') doSearch()">
+      <button onclick="doSearch()" class="bg-red-600 hover:bg-red-700 px-6 py-3 rounded-lg font-medium transition">Search</button>
+    </div>
+  </div>
+
+  <!-- TMDB results -->
+  <div id="tmdb-results" class="mb-8 hidden">
+    <h3 class="text-lg font-semibold mb-3 text-neutral-300">Movies & TV Shows</h3>
+    <div id="tmdb-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4"></div>
+  </div>
+
+  <!-- Torrent results -->
+  <div id="torrent-results" class="hidden">
+    <h3 class="text-lg font-semibold mb-3 text-neutral-300">Available Torrents</h3>
+    <div id="torrent-list" class="space-y-2"></div>
+  </div>
+
+  <div id="search-loading" class="hidden text-center py-12 text-neutral-500">
+    <div class="spinner mx-auto mb-3"></div>
+    Searching indexers...
+  </div>
+</div>
+
+<!-- Downloads Tab -->
+<div id="view-downloads" class="p-6 hidden">
+  <h2 class="text-xl font-semibold mb-4">Active Downloads</h2>
+  <div id="downloads-list" class="space-y-3">
+    <p class="text-neutral-500">No active downloads</p>
+  </div>
+</div>
+
+<!-- Library Tab -->
+<div id="view-library" class="p-6 hidden">
+  <h2 class="text-xl font-semibold mb-4">Your Library</h2>
+  <!-- Storage bar -->
+  <div id="storage-bar" class="mb-6 hidden">
+    <div class="flex justify-between text-xs text-neutral-400 mb-1">
+      <span id="storage-used"></span>
+      <span id="storage-free"></span>
+    </div>
+    <div class="w-full bg-neutral-800 rounded-full h-5 overflow-hidden relative">
+      <div id="storage-files-bar" class="h-full absolute left-0 top-0"></div>
+      <div id="storage-other-bar" class="h-full bg-neutral-600 absolute top-0" style="left:0"></div>
+    </div>
+    <div id="storage-legend" class="flex flex-wrap gap-3 mt-2 text-xs text-neutral-400"></div>
+  </div>
+  <div id="library-list" class="space-y-2">
+    <p class="text-neutral-500">No videos found. Add your media to the media directory.</p>
+  </div>
+</div>
+
+<!-- Video Player Modal -->
+<div id="player-modal" class="fixed inset-0 z-50 bg-black/95 hidden flex items-center justify-center">
+  <button onclick="closePlayer()" class="absolute top-4 right-6 text-3xl text-white hover:text-red-500">&times;</button>
+  <video id="video-player" controls class="max-w-full max-h-full" crossorigin="anonymous"></video>
+</div>
+
+<!-- Subtitle Search Modal -->
+<div id="subs-modal" class="fixed inset-0 z-50 bg-black/80 hidden flex items-center justify-center p-4">
+  <div class="bg-neutral-900 rounded-xl max-w-lg w-full max-h-[80vh] overflow-y-auto p-6">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="text-lg font-semibold">Get Subtitles</h3>
+      <button onclick="closeSubSearch()" class="text-neutral-400 hover:text-white text-xl">&times;</button>
+    </div>
+    <div class="flex gap-2 mb-4">
+      <input id="subs-search-input" type="text" class="flex-1 bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white placeholder-neutral-500 focus:outline-none focus:border-red-600" placeholder="Movie or show name...">
+      <button onclick="searchSubs()" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg text-sm font-medium">Search</button>
+    </div>
+    <div id="subs-results" class="space-y-2"></div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+
+// --- Tabs ---
+function showTab(name) {
+  ['home','search','downloads','library'].forEach(t => {
+    document.getElementById('view-'+t).classList.toggle('hidden', t !== name);
+    document.getElementById('tab-'+t).classList.toggle('tab-active', t === name);
+  });
+  if (name === 'downloads') refreshDownloads();
+  if (name === 'library') refreshLibrary();
+  if (name === 'home') loadTrending();
+}
+
+// --- Trending ---
+let trendingLoaded = false;
+async function loadTrending() {
+  if (trendingLoaded) return;
+  try {
+    const res = await fetch('/api/trending');
+    const items = await res.json();
+    trendingLoaded = true;
+    const movies = items.filter(i => i.media_type === 'movie');
+    const shows = items.filter(i => i.media_type === 'tv');
+    $('#trending-movies').innerHTML = movies.length
+      ? movies.map(item => tmdbCard(item)).join('')
+      : '<p class="col-span-full text-neutral-500">No trending movies found</p>';
+    $('#trending-shows').innerHTML = shows.length
+      ? shows.map(item => tmdbCard(item)).join('')
+      : '<p class="col-span-full text-neutral-500">No trending shows found</p>';
+  } catch(e) {
+    $('#trending-movies').innerHTML = '<p class="col-span-full text-neutral-500">Failed to load</p>';
+    $('#trending-shows').innerHTML = '';
+  }
+}
+
+function tmdbCard(item) {
+  const poster = item.poster_url || '';
+  const bg = poster ? `url(${poster})` : 'linear-gradient(135deg, #1a1a2e, #16213e)';
+  return `
+    <div class="card cursor-pointer group" onclick="searchFromTmdb('${esc(item.title)}', '${esc(poster)}')">
+      <div class="aspect-[2/3] rounded-lg bg-cover bg-center relative overflow-hidden" style="background-image: ${bg}">
+        ${!poster ? `<div class="absolute inset-0 flex items-center justify-center p-2 text-center text-sm text-neutral-400">${esc(item.title)}</div>` : ''}
+        <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent p-2 opacity-0 group-hover:opacity-100 transition">
+          <div class="text-xs font-medium truncate">${esc(item.title)}</div>
+          <div class="text-xs text-neutral-400">${item.year} · ★ ${item.rating.toFixed(1)}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function searchFromTmdb(title, poster) {
+  currentSearchTitle = title;
+  currentSearchPoster = poster || null;
+  showTab('search');
+  $('#search-input').value = title;
+  doSearch();
+}
+
+// --- Search ---
+async function doSearch() {
+  const q = $('#search-input').value.trim();
+  if (!q) return;
+
+  // Reset search context only if not coming from a card click
+  if (!currentSearchPoster) { currentSearchTitle = q; }
+
+  $('#search-loading').classList.remove('hidden');
+  $('#tmdb-results').classList.add('hidden');
+  $('#torrent-results').classList.add('hidden');
+
+  const [tmdbRes, torrentRes] = await Promise.allSettled([
+    fetch('/api/search/meta?q=' + encodeURIComponent(q)).then(r => r.json()),
+    fetch('/api/search/torrents?q=' + encodeURIComponent(q)).then(r => r.json()),
+  ]);
+
+  $('#search-loading').classList.add('hidden');
+
+  // TMDB results — also grab first result's poster for download context
+  if (tmdbRes.status === 'fulfilled' && tmdbRes.value.length) {
+    $('#tmdb-results').classList.remove('hidden');
+    $('#tmdb-grid').innerHTML = tmdbRes.value.map(item => tmdbCard(item)).join('');
+    if (!currentSearchPoster && tmdbRes.value[0].poster_url) {
+      currentSearchPoster = tmdbRes.value[0].poster_url;
+      currentSearchTitle = tmdbRes.value[0].title;
+    }
+  }
+
+  // Torrent results
+  if (torrentRes.status === 'fulfilled' && torrentRes.value.length) {
+    $('#torrent-results').classList.remove('hidden');
+    $('#torrent-list').innerHTML = torrentRes.value.map(torrentRow).join('');
+  } else {
+    $('#torrent-results').classList.remove('hidden');
+    $('#torrent-list').innerHTML = '<p class="text-neutral-500">No torrents found</p>';
+  }
+}
+
+// Track the current search context (poster from metadata results)
+let currentSearchPoster = null;
+let currentSearchTitle = null;
+
+function torrentRow(t) {
+  const hasMagnet = !!t.magnet;
+  const titleAttr = esc(t.title).replace(/'/g, "\\'");
+  const btn = hasMagnet
+    ? `<button onclick="addTorrentClick(this, '${esc(t.magnet)}', '${titleAttr}')" class="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm font-medium transition whitespace-nowrap">Download</button>`
+    : `<button onclick="fetchAndAdd(this, '${esc(t.detail_url)}', '${titleAttr}')" class="bg-amber-600 hover:bg-amber-700 px-3 py-1 rounded text-sm font-medium transition whitespace-nowrap">Get Magnet</button>`;
+
+  return `
+    <div class="flex items-center justify-between bg-neutral-900 rounded-lg px-4 py-3 gap-4">
+      <div class="min-w-0 flex-1">
+        <div class="text-sm font-medium truncate">${esc(t.title)}</div>
+        <div class="text-xs text-neutral-500 mt-1">
+          <span class="text-green-500">${t.seeds} seeds</span> ·
+          <span class="text-red-400">${t.leeches} leeches</span> ·
+          ${t.size} ·
+          <span class="text-neutral-600">${t.source}</span>
+        </div>
+      </div>
+      ${btn}
+    </div>
+  `;
+}
+
+async function addTorrentClick(btn, magnet, title) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px;"></span>';
+  const ok = await addTorrent(magnet, title);
+  if (ok) {
+    btn.textContent = 'Added!';
+    btn.classList.replace('bg-red-600', 'bg-green-700');
+    btn.classList.replace('hover:bg-red-700', 'hover:bg-green-700');
+  } else {
+    btn.textContent = 'Failed';
+    btn.classList.replace('bg-red-600', 'bg-neutral-700');
+  }
+}
+
+async function fetchAndAdd(btn, detailUrl, title) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px;"></span>';
+  try {
+    const res = await fetch('/api/magnet/1337x?url=' + encodeURIComponent(detailUrl));
+    const data = await res.json();
+    if (data.magnet) {
+      const ok = await addTorrent(data.magnet, title);
+      btn.textContent = ok ? 'Added!' : 'Failed';
+      if (ok) btn.classList.replace('bg-amber-600', 'bg-green-700');
+    } else {
+      btn.textContent = 'Failed';
+    }
+  } catch {
+    btn.textContent = 'Error';
+  }
+}
+
+async function addTorrent(magnet, title) {
+  try {
+    const res = await fetch('/api/torrents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        magnet,
+        title: title || currentSearchTitle || '',
+        poster_url: currentSearchPoster || null,
+      }),
+    });
+    const data = await res.json();
+    if (data.error) { alert('Error: ' + data.error); return false; }
+    return true;
+  } catch(e) {
+    alert('Failed to add torrent');
+    return false;
+  }
+}
+
+// --- Downloads ---
+let dlInterval = null;
+async function refreshDownloads() {
+  try {
+    const res = await fetch('/api/torrents');
+    const torrents = await res.json();
+    const el = $('#downloads-list');
+    if (!torrents.length) {
+      el.innerHTML = '<p class="text-neutral-500">No active downloads</p>';
+      return;
+    }
+    el.innerHTML = torrents.map(t => `
+      <div class="bg-neutral-900 rounded-lg px-4 py-3 flex gap-4">
+        ${t.poster_url ? `<img src="${esc(t.poster_url)}" class="w-16 h-24 rounded object-cover flex-shrink-0" alt="">` : ''}
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-sm font-medium truncate flex-1">${esc(t.title || t.name)}</span>
+            <span class="text-xs text-neutral-400 ml-2">${t.state}${t.download_speed ? ' · ' + t.download_speed.toFixed(2) + ' Mbps' : ''}</span>
+            <button onclick="deleteTorrent(${t.id})" class="ml-3 text-neutral-600 hover:text-red-500 text-sm">✕</button>
+          </div>
+          ${t.name !== t.title ? `<div class="text-xs text-neutral-500 truncate mb-2">${esc(t.name)}</div>` : ''}
+          <div class="w-full bg-neutral-800 rounded-full h-2 overflow-hidden">
+            <div class="progress-bar h-full rounded-full transition-all duration-500" style="width: ${t.progress_pct.toFixed(1)}%"></div>
+          </div>
+          <div class="text-xs text-neutral-500 mt-1">${t.progress_pct.toFixed(1)}% · ${formatBytes(t.progress_bytes)} / ${formatBytes(t.total_bytes)}</div>
+        </div>
+      </div>
+    `).join('');
+  } catch(e) {
+    $('#downloads-list').innerHTML = '<p class="text-red-400">Error loading downloads</p>';
+  }
+}
+
+// Auto-refresh downloads when tab is active
+setInterval(() => {
+  if (!$('#view-downloads').classList.contains('hidden')) refreshDownloads();
+}, 2000);
+
+async function deleteTorrent(id) {
+  await fetch('/api/torrents/' + id, { method: 'DELETE' });
+  refreshDownloads();
+}
+
+// --- Library ---
+const FILE_COLORS = [
+  '#e50914','#2563eb','#16a34a','#d97706','#9333ea','#ec4899','#06b6d4','#84cc16',
+  '#f43f5e','#6366f1','#14b8a6','#eab308','#a855f7','#fb923c','#22d3ee','#4ade80',
+];
+
+async function refreshLibrary() {
+  try {
+    const res = await fetch('/api/library');
+    const lib = await res.json();
+    const el = $('#library-list');
+
+    // Storage bar
+    const s = lib.storage;
+    if (s && s.total_bytes > 0) {
+      $('#storage-bar').classList.remove('hidden');
+      const totalMedia = lib.files.reduce((sum, f) => sum + f.size_bytes, 0);
+      const otherUsed = s.used_bytes - totalMedia;
+
+      $('#storage-used').textContent = `${s.used_display} used of ${s.total_display}`;
+      $('#storage-free').textContent = `${s.free_display} free`;
+
+      // Build colored segments for each file
+      let segments = '';
+      let legendHtml = '';
+      let leftPct = 0;
+      lib.files.forEach((f, i) => {
+        const pct = (f.size_bytes / s.total_bytes) * 100;
+        const color = FILE_COLORS[i % FILE_COLORS.length];
+        segments += `<div style="position:absolute;left:${leftPct}%;width:${pct}%;height:100%;background:${color}" title="${f.filename} (${f.size_display})"></div>`;
+        legendHtml += `<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${color};margin-right:4px"></span>${esc(f.filename.length > 25 ? f.filename.slice(0,22)+'...' : f.filename)} (${f.size_display})</span>`;
+        leftPct += pct;
+      });
+      // "Other" segment (OS, apps, etc)
+      const otherPct = (Math.max(0, otherUsed) / s.total_bytes) * 100;
+      if (otherPct > 0.5) {
+        segments += `<div style="position:absolute;left:${leftPct}%;width:${otherPct}%;height:100%;background:#525252" title="System & other (${formatBytes(otherUsed)})"></div>`;
+        legendHtml += `<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#525252;margin-right:4px"></span>System (${formatBytes(otherUsed)})</span>`;
+      }
+      $('#storage-files-bar').innerHTML = segments;
+      $('#storage-other-bar').style.display = 'none';
+      $('#storage-legend').innerHTML = legendHtml;
+    }
+
+    if (!lib.files || !lib.files.length) {
+      el.innerHTML = '<p class="text-neutral-500">No videos found. Download something first!</p>';
+      return;
+    }
+    el.innerHTML = lib.files.map((f, i) => {
+      const color = FILE_COLORS[i % FILE_COLORS.length];
+      return `
+      <div class="flex items-center justify-between bg-neutral-900 rounded-lg px-4 py-3 hover:bg-neutral-800 transition gap-3">
+        <div style="width:4px;height:36px;border-radius:2px;background:${color};flex-shrink:0"></div>
+        <div class="min-w-0 flex-1 cursor-pointer" onclick="playVideo('${esc(f.path)}', ${f.has_subs ? `'${esc(f.srt_path)}'` : 'null'})">
+          <div class="text-sm font-medium truncate">${esc(f.filename)}</div>
+          <div class="text-xs text-neutral-500 mt-1">
+            ${f.size_display}
+            ${f.has_subs ? '<span class="text-green-500 ml-2">CC</span>' : ''}
+          </div>
+        </div>
+        <button onclick="openSubSearch('${esc(f.filename)}', '${esc(f.path)}')" class="text-xs px-2 py-1 rounded ${f.has_subs ? 'bg-green-800 text-green-200' : 'bg-neutral-700 text-neutral-300'} hover:bg-neutral-600 transition whitespace-nowrap" title="Get subtitles">
+          ${f.has_subs ? 'CC' : 'Subs'}
+        </button>
+        <span class="text-red-500 text-lg cursor-pointer" onclick="playVideo('${esc(f.path)}', ${f.has_subs ? `'${esc(f.srt_path)}'` : 'null'})">▶</span>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    $('#library-list').innerHTML = '<p class="text-red-400">Error loading library</p>';
+  }
+}
+
+// --- Video Player ---
+function playVideo(path, srtPath) {
+  const player = $('#video-player');
+  // Remove old tracks
+  player.querySelectorAll('track').forEach(t => t.remove());
+  player.src = '/media/' + encodeURIComponent(path);
+  if (srtPath) {
+    const track = document.createElement('track');
+    track.kind = 'subtitles';
+    track.label = 'English';
+    track.srclang = 'en';
+    track.src = '/media/' + encodeURIComponent(srtPath);
+    track.default = true;
+    player.appendChild(track);
+  }
+  $('#player-modal').classList.remove('hidden');
+  player.play();
+}
+
+function closePlayer() {
+  const player = $('#video-player');
+  player.pause();
+  player.src = '';
+  player.querySelectorAll('track').forEach(t => t.remove());
+  $('#player-modal').classList.add('hidden');
+}
+
+// --- Subtitle Search ---
+let subsVideoPath = '';
+
+function openSubSearch(filename, videoPath) {
+  subsVideoPath = videoPath;
+  // Pre-fill search with cleaned filename
+  const clean = filename.replace(/\.[^.]+$/, '').replace(/[\._]/g, ' ').replace(/\b(1080p|720p|2160p|WEB|DL|BluRay|HEVC|x264|x265|AAC|DDP|AMZN|RARBG|YIFY|HDR|REMUX|WEBRip)\b.*/i, '').trim();
+  $('#subs-search-input').value = clean;
+  $('#subs-modal').classList.remove('hidden');
+  $('#subs-results').innerHTML = '';
+  searchSubs();
+}
+
+function closeSubSearch() {
+  $('#subs-modal').classList.add('hidden');
+}
+
+async function searchSubs() {
+  const q = $('#subs-search-input').value.trim();
+  if (!q) return;
+  $('#subs-results').innerHTML = '<div class="text-neutral-500 text-center py-4"><div class="spinner mx-auto mb-2"></div>Searching...</div>';
+  try {
+    // Search OpenSubtitles directly from the browser (CORS allowed)
+    const encoded = q.replace(/[^a-zA-Z0-9]/g, '-');
+    const res = await fetch(
+      `https://rest.opensubtitles.org/search/query-${encoded}/sublanguageid-eng`,
+      { headers: { 'User-Agent': 'TemporaryUserAgent' } }
+    );
+    const raw = await res.json();
+    const subs = raw.slice(0, 10);
+    if (!subs.length) {
+      $('#subs-results').innerHTML = '<p class="text-neutral-500 text-center py-4">No subtitles found</p>';
+      return;
+    }
+    $('#subs-results').innerHTML = subs.map(s => `
+      <div class="flex items-center justify-between bg-neutral-800 rounded-lg px-3 py-2 gap-3">
+        <div class="min-w-0 flex-1">
+          <div class="text-xs font-medium truncate">${esc(s.SubFileName)}</div>
+          <div class="text-xs text-neutral-500">${s.LanguageName} · ${s.SubFormat} · ${s.SubDownloadsCnt} downloads</div>
+        </div>
+        <button onclick="downloadSub(this, '${esc(s.SubDownloadLink)}')" class="bg-green-700 hover:bg-green-600 px-3 py-1 rounded text-xs font-medium transition whitespace-nowrap">Download</button>
+      </div>
+    `).join('');
+  } catch(e) {
+    $('#subs-results').innerHTML = '<p class="text-red-400 text-center">Error: ' + esc(e.message) + '</p>';
+  }
+}
+
+async function downloadSub(btn, downloadUrl) {
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>';
+  try {
+    // Fetch the gzipped subtitle from OpenSubtitles via browser
+    const res = await fetch(downloadUrl);
+    const blob = await res.blob();
+
+    // Decompress gzip
+    let srtText;
+    if (typeof DecompressionStream !== 'undefined') {
+      const ds = new DecompressionStream('gzip');
+      const decompressed = blob.stream().pipeThrough(ds);
+      srtText = await new Response(decompressed).text();
+    } else {
+      // Fallback: try as plain text
+      srtText = await blob.text();
+    }
+
+    // Send the raw .srt text to pizerarr to save next to the video
+    const saveRes = await fetch('/api/subs/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ srt_content: srtText, video_path: subsVideoPath }),
+    });
+    const data = await saveRes.json();
+    if (data.status === 'ok') {
+      btn.textContent = 'Done!';
+      btn.classList.replace('bg-green-700', 'bg-green-900');
+      refreshLibrary();
+    } else {
+      btn.textContent = 'Failed';
+    }
+  } catch(e) {
+    btn.textContent = 'Error';
+    console.error('Sub download failed:', e);
+  }
+}
+
+// --- Utils ---
+function esc(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function formatBytes(b) {
+  if (b >= 1073741824) return (b/1073741824).toFixed(1) + ' GB';
+  if (b >= 1048576) return (b/1048576).toFixed(1) + ' MB';
+  return Math.round(b/1024) + ' KB';
+}
+
+// --- Init ---
+loadTrending();
+</script>
+</body>
+</html>

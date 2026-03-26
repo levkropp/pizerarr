@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pizerarr — self-hosted media server in a single binary</title>
+  <meta name="description" content="A lightweight, self-hosted media server with torrent search, downloads, subtitles, and a Netflix-like UI. Single 12MB binary, runs on a Raspberry Pi.">
+  <style>
+    :root {
+      --red: #e50914;
+      --bg: #0a0a0a;
+      --surface: #141414;
+      --surface2: #1a1a1a;
+      --border: #2a2a2a;
+      --text: #e5e5e5;
+      --muted: #737373;
+      --radius: 12px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+    a { color: var(--red); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code { background: var(--surface2); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    pre { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; overflow-x: auto; font-size: 0.85em; line-height: 1.7; }
+    pre code { background: none; padding: 0; }
+
+    /* Nav */
+    nav { position: sticky; top: 0; z-index: 50; background: rgba(10,10,10,0.8); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); padding: 0 24px; }
+    .nav-inner { max-width: 1100px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .nav-logo { font-size: 1.4em; font-weight: 700; color: var(--red); letter-spacing: -0.5px; }
+    .nav-links { display: flex; gap: 24px; }
+    .nav-links a { color: var(--muted); font-size: 0.9em; font-weight: 500; }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+    .nav-gh { color: var(--muted); display: flex; align-items: center; gap: 6px; font-size: 0.9em; }
+    .nav-gh:hover { color: var(--text); text-decoration: none; }
+
+    /* Hero */
+    .hero { max-width: 1100px; margin: 0 auto; padding: 80px 24px 60px; text-align: center; }
+    .hero h1 { font-size: 3.5em; font-weight: 800; letter-spacing: -1.5px; margin-bottom: 16px; }
+    .hero h1 span { color: var(--red); }
+    .hero p { font-size: 1.2em; color: var(--muted); max-width: 600px; margin: 0 auto 32px; }
+    .hero-stats { display: flex; justify-content: center; gap: 40px; margin-bottom: 40px; }
+    .hero-stat { text-align: center; }
+    .hero-stat .num { font-size: 2em; font-weight: 700; color: var(--text); }
+    .hero-stat .label { font-size: 0.85em; color: var(--muted); }
+    .hero-buttons { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; border-radius: 8px; font-weight: 600; font-size: 0.95em; border: none; cursor: pointer; transition: 0.2s; }
+    .btn-primary { background: var(--red); color: white; }
+    .btn-primary:hover { background: #c10812; text-decoration: none; }
+    .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); text-decoration: none; }
+
+    /* Sections */
+    section { max-width: 1100px; margin: 0 auto; padding: 60px 24px; }
+    section h2 { font-size: 2em; font-weight: 700; margin-bottom: 12px; letter-spacing: -0.5px; }
+    section .subtitle { color: var(--muted); margin-bottom: 32px; font-size: 1.05em; }
+
+    /* Feature grid */
+    .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+    .feature { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+    .feature h3 { font-size: 1.1em; margin-bottom: 8px; }
+    .feature p { color: var(--muted); font-size: 0.9em; }
+    .feature .icon { font-size: 1.5em; margin-bottom: 12px; }
+
+    /* Install */
+    .install-steps { display: grid; gap: 16px; }
+    .install-step { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; }
+    .install-step .step-num { color: var(--red); font-weight: 700; font-size: 0.85em; margin-bottom: 4px; }
+    .install-step h3 { font-size: 1em; margin-bottom: 8px; }
+    .install-step p { color: var(--muted); font-size: 0.9em; }
+
+    /* Footer */
+    footer { border-top: 1px solid var(--border); padding: 32px 24px; text-align: center; color: var(--muted); font-size: 0.85em; }
+
+    @media (max-width: 640px) {
+      .hero h1 { font-size: 2.2em; }
+      .hero-stats { gap: 20px; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <span class="nav-logo">pizerarr</span>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#firetv">Fire TV</a>
+    </div>
+    <a href="https://github.com/levkropp/pizerarr" class="nav-gh">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1>Your media.<br><span>One binary.</span></h1>
+  <p>A self-hosted Netflix-like media server with built-in torrent search, downloads, and subtitles. Runs on a Raspberry Pi.</p>
+  <div class="hero-stats">
+    <div class="hero-stat"><div class="num">12MB</div><div class="label">Binary size</div></div>
+    <div class="hero-stat"><div class="num">~15MB</div><div class="label">RAM usage</div></div>
+    <div class="hero-stat"><div class="num">0</div><div class="label">API keys needed</div></div>
+  </div>
+  <div class="hero-buttons">
+    <a href="https://github.com/levkropp/pizerarr/releases/latest" class="btn btn-primary">Download Latest</a>
+    <a href="#install" class="btn btn-secondary">Quick Start</a>
+  </div>
+</div>
+
+<section id="features">
+  <h2>Features</h2>
+  <p class="subtitle">Everything you need to find, download, and watch media — no configuration required.</p>
+  <div class="features">
+    <div class="feature">
+      <div class="icon">&#127916;</div>
+      <h3>Netflix-like UI</h3>
+      <p>Dark theme with trending movies, TV shows, poster art, and search — all from free public APIs (TMDB scraping, TVmaze, mdblist).</p>
+    </div>
+    <div class="feature">
+      <div class="icon">&#128269;</div>
+      <h3>Multi-source torrent search</h3>
+      <p>Searches PirateBay, YTS, and 1337x in parallel. One-click download with real-time progress tracking.</p>
+    </div>
+    <div class="feature">
+      <div class="icon">&#11015;&#65039;</div>
+      <h3>Built-in torrent client</h3>
+      <p>Powered by librqbit — a pure Rust BitTorrent engine. No qBittorrent or Transmission needed.</p>
+    </div>
+    <div class="feature">
+      <div class="icon">&#128196;</div>
+      <h3>Subtitle support</h3>
+      <p>Search and download subtitles from OpenSubtitles directly in the browser. Saved next to video files for automatic loading.</p>
+    </div>
+    <div class="feature">
+      <div class="icon">&#128250;</div>
+      <h3>Fire TV app</h3>
+      <p>Sideload the included WebView APK to get a fullscreen pizerarr experience on any Fire Stick or Android TV.</p>
+    </div>
+    <div class="feature">
+      <div class="icon">&#128190;</div>
+      <h3>Storage visualization</h3>
+      <p>See exactly how much space each movie takes on your SD card with a colored usage bar.</p>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <h2>Quick Start</h2>
+  <p class="subtitle">Get pizerarr running in under a minute.</p>
+  <div class="install-steps">
+    <div class="install-step">
+      <div class="step-num">STEP 1</div>
+      <h3>Download the binary</h3>
+      <pre><code># On your Raspberry Pi (arm64)
+curl -Lo pizerarr https://github.com/levkropp/pizerarr/releases/latest/download/pizerarr-linux-arm64
+chmod +x pizerarr</code></pre>
+    </div>
+    <div class="install-step">
+      <div class="step-num">STEP 2</div>
+      <h3>Run it</h3>
+      <pre><code># Minimal — just works
+./pizerarr
+
+# Or configure paths
+PIZERARR_MEDIA_DIR=/mnt/videos PIZERARR_DOWNLOAD_DIR=/mnt/downloads ./pizerarr</code></pre>
+    </div>
+    <div class="install-step">
+      <div class="step-num">STEP 3</div>
+      <h3>Open your browser</h3>
+      <p>Navigate to <code>http://&lt;your-pi-ip&gt;:8080</code> and start browsing.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Run as a service</h2>
+  <pre><code>sudo mv pizerarr /usr/local/bin/
+sudo tee /etc/systemd/system/pizerarr.service &lt;&lt;EOF
+[Unit]
+Description=pizerarr media server
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/pizerarr
+Environment=PIZERARR_MEDIA_DIR=/srv/pizerarr/media
+Environment=PIZERARR_DOWNLOAD_DIR=/srv/pizerarr/downloads
+Environment=PIZERARR_PORT=80
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable --now pizerarr</code></pre>
+</section>
+
+<section id="firetv">
+  <h2>Fire TV / Android TV</h2>
+  <p class="subtitle">Watch pizerarr on your TV.</p>
+  <div class="install-steps">
+    <div class="install-step">
+      <div class="step-num">STEP 1</div>
+      <h3>Download the APK</h3>
+      <p>Grab <code>pizerarr-firetv.apk</code> from the <a href="https://github.com/levkropp/pizerarr/releases/latest">latest release</a>.</p>
+    </div>
+    <div class="install-step">
+      <div class="step-num">STEP 2</div>
+      <h3>Sideload it</h3>
+      <p>Use the <strong>Downloader</strong> app on your Fire Stick, or <code>adb install pizerarr-firetv.apk</code> from your computer.</p>
+    </div>
+    <div class="install-step">
+      <div class="step-num">STEP 3</div>
+      <h3>Launch</h3>
+      <p>Find "pizerarr" on your home screen. It opens fullscreen and works with the Fire TV remote.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Built with Rust + Tailwind. No API keys. No Docker. No dependencies. Just one binary.
+</footer>
+
+</body>
+</html>

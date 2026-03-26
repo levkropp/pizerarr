@@ -1,0 +1,35 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'tv.pi.pizerarr'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "tv.pi.pizerarr"
+        minSdk 22
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation 'androidx.leanback:leanback:1.0.0'
+}
