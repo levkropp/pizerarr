@@ -6,28 +6,33 @@ const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts",
 ];
 
+const SUB_EXTENSIONS: &[&str] = &["srt", "vtt", "ass", "ssa", "sub", "idx"];
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SubTrack {
+    pub path: String,
+    pub label: String,
+    pub lang: String,
+    pub format: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MediaFile {
     pub filename: String,
     pub path: String,
-    /// Which base dir this file is in ("media" or "downloads")
     pub source: String,
     pub size_bytes: u64,
     pub size_display: String,
     pub has_subs: bool,
-    pub srt_path: Option<String>,
-    /// Video codec (e.g. "h264", "hevc", "vp9")
+    pub subtitle_tracks: Vec<SubTrack>,
     pub video_codec: String,
-    /// Audio codec (e.g. "aac", "ac3", "opus")
     pub audio_codec: String,
-    /// Resolution (e.g. "1920x1080")
     pub resolution: String,
-    /// Container format (e.g. "mkv", "mp4")
     pub container: String,
-    /// Whether this file can be played natively in a browser
     pub browser_playable: bool,
-    /// HLS playlist path if a transcoded version exists
     pub hls_path: Option<String>,
+    /// Embedded subtitle tracks detected by ffprobe
+    pub embedded_subs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,36 +94,26 @@ impl Library {
                         .unwrap_or(&path)
                         .to_string_lossy()
                         .to_string();
-                    let srt = path.with_extension("srt");
-                    let has_subs = srt.exists();
-                    let srt_rel = if has_subs {
-                        Some(
-                            srt.strip_prefix(base)
-                                .unwrap_or(&srt)
-                                .to_string_lossy()
-                                .to_string(),
-                        )
-                    } else {
-                        None
-                    };
-                    // For serving, prefix with source dir so the /media route can find it
                     let serve_path = if source == "downloads" {
-                        // We'll add a /downloads nest route
                         format!("dl/{}", rel_path)
                     } else {
                         rel_path
                     };
                     let ext_lower = ext.to_lowercase();
                     let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
 
-                    // Probe codec info
-                    let probe = probe_video(&path).await;
-                    let video_codec = probe.0;
-                    let audio_codec = probe.1;
-                    let resolution = probe.2;
+                    // Find external subtitle files
+                    let subtitle_tracks = find_subtitle_tracks(
+                        &path, base, source, &stem,
+                    ).await;
+                    let has_subs = !subtitle_tracks.is_empty();
+
+                    // Probe codec info + embedded subs
+                    let (video_codec, audio_codec, resolution, embedded_subs) =
+                        probe_video_full(&path).await;
                     let container = ext_lower.clone();
 
-                    // Browser can play H.264/VP8/VP9 in MP4/WebM containers
                     let browser_playable = matches!(container.as_str(), "mp4" | "webm" | "m4v")
                         && matches!(video_codec.as_str(), "h264" | "vp8" | "vp9" | "");
 
@@ -136,20 +131,15 @@ impl Library {
                         source: source.to_string(),
                         size_bytes: size,
                         size_display: format_size(size),
-                        has_subs,
-                        srt_path: srt_rel.map(|p| {
-                            if source == "downloads" {
-                                format!("dl/{}", p)
-                            } else {
-                                p
-                            }
-                        }),
+                        has_subs: has_subs || !embedded_subs.is_empty(),
+                        subtitle_tracks,
                         video_codec,
                         audio_codec,
                         resolution,
                         container,
                         browser_playable,
                         hls_path,
+                        embedded_subs,
                     });
                 }
             }
@@ -195,12 +185,159 @@ fn get_storage_info(path: &Path) -> StorageInfo {
     }
 }
 
-/// Probe video file for codec and resolution info via ffprobe
-async fn probe_video(path: &Path) -> (String, String, String) {
+/// Find all external subtitle files matching a video's stem
+async fn find_subtitle_tracks(
+    video_path: &Path,
+    base: &Path,
+    source: &str,
+    stem: &str,
+) -> Vec<SubTrack> {
+    let mut tracks = Vec::new();
+    let parent = match video_path.parent() {
+        Some(p) => p,
+        None => return tracks,
+    };
+
+    // Check files in same directory and "Subs"/"Subtitles" subdirectories
+    let dirs_to_check: Vec<PathBuf> = vec![
+        parent.to_path_buf(),
+        parent.join("Subs"),
+        parent.join("subs"),
+        parent.join("Subtitles"),
+        parent.join("subtitles"),
+    ];
+
+    for dir in dirs_to_check {
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let p = entry.path();
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                let ext_lower = ext.to_lowercase();
+                if !SUB_EXTENSIONS.contains(&ext_lower.as_str()) {
+                    continue;
+                }
+                let fname = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+                // Match if the subtitle filename starts with the video stem
+                // or if it's in a Subs directory (include all)
+                let in_subs_dir = dir != parent.to_path_buf();
+                if !fname.to_lowercase().starts_with(&stem.to_lowercase()) && !in_subs_dir {
+                    continue;
+                }
+
+                let lang = guess_language(&fname, stem);
+                let label = if lang == "und" {
+                    fname.clone()
+                } else {
+                    format!("{} ({})", lang_name(&lang), ext_lower)
+                };
+
+                let rel = p.strip_prefix(base).unwrap_or(&p).to_string_lossy().to_string();
+                let serve = if source == "downloads" {
+                    format!("dl/{}", rel)
+                } else {
+                    rel
+                };
+
+                tracks.push(SubTrack {
+                    path: serve,
+                    label,
+                    lang: lang.clone(),
+                    format: ext_lower,
+                });
+            }
+        }
+    }
+
+    // Sort: English first, then alphabetical
+    tracks.sort_by(|a, b| {
+        let a_en = a.lang == "en" || a.lang == "eng";
+        let b_en = b.lang == "en" || b.lang == "eng";
+        b_en.cmp(&a_en).then(a.label.cmp(&b.label))
+    });
+
+    tracks
+}
+
+/// Guess subtitle language from filename patterns
+fn guess_language(filename: &str, video_stem: &str) -> String {
+    let lower = filename.to_lowercase();
+    let suffix = lower
+        .strip_prefix(&video_stem.to_lowercase())
+        .unwrap_or(&lower)
+        .trim_start_matches('.');
+
+    // Common patterns: movie.en.srt, movie.english.srt, English.srt
+    let lang_part = suffix.split('.').next().unwrap_or("");
+
+    match lang_part {
+        "en" | "eng" | "english" => "en".into(),
+        "es" | "spa" | "spanish" => "es".into(),
+        "fr" | "fre" | "french" => "fr".into(),
+        "de" | "ger" | "german" => "de".into(),
+        "it" | "ita" | "italian" => "it".into(),
+        "pt" | "por" | "portuguese" => "pt".into(),
+        "nl" | "dut" | "dutch" => "nl".into(),
+        "ru" | "rus" | "russian" => "ru".into(),
+        "ja" | "jpn" | "japanese" => "ja".into(),
+        "ko" | "kor" | "korean" => "ko".into(),
+        "zh" | "chi" | "chinese" => "zh".into(),
+        "ar" | "ara" | "arabic" => "ar".into(),
+        "hi" | "hin" | "hindi" => "hi".into(),
+        "sv" | "swe" | "swedish" => "sv".into(),
+        "no" | "nor" | "norwegian" => "no".into(),
+        "da" | "dan" | "danish" => "da".into(),
+        "fi" | "fin" | "finnish" => "fi".into(),
+        "pl" | "pol" | "polish" => "pl".into(),
+        "tr" | "tur" | "turkish" => "tr".into(),
+        "sdh" => "en".into(), // SDH is usually English
+        s if s.len() == 2 || s.len() == 3 => s.to_string(),
+        _ => {
+            // Check if the whole filename (for Subs/ directories) is a language
+            let name_no_ext = filename.rsplit('.').skip(1).collect::<Vec<_>>().join(".");
+            let name_lower = name_no_ext.to_lowercase();
+            if name_lower.contains("english") { return "en".into(); }
+            if name_lower.contains("spanish") { return "es".into(); }
+            if name_lower.contains("french") { return "fr".into(); }
+            "und".into()
+        }
+    }
+}
+
+fn lang_name(code: &str) -> &str {
+    match code {
+        "en" | "eng" => "English",
+        "es" | "spa" => "Spanish",
+        "fr" | "fre" => "French",
+        "de" | "ger" => "German",
+        "it" | "ita" => "Italian",
+        "pt" | "por" => "Portuguese",
+        "nl" | "dut" => "Dutch",
+        "ru" | "rus" => "Russian",
+        "ja" | "jpn" => "Japanese",
+        "ko" | "kor" => "Korean",
+        "zh" | "chi" => "Chinese",
+        "ar" | "ara" => "Arabic",
+        "hi" | "hin" => "Hindi",
+        "sv" | "swe" => "Swedish",
+        "no" | "nor" => "Norwegian",
+        "da" | "dan" => "Danish",
+        "fi" | "fin" => "Finnish",
+        "pl" | "pol" => "Polish",
+        "tr" | "tur" => "Turkish",
+        _ => code,
+    }
+}
+
+/// Probe video file for codec, resolution, and embedded subtitle tracks
+async fn probe_video_full(path: &Path) -> (String, String, String, Vec<String>) {
     let output = tokio::process::Command::new("ffprobe")
         .args([
             "-v", "quiet",
-            "-show_entries", "stream=codec_name,codec_type,width,height",
+            "-show_entries", "stream=codec_name,codec_type,width,height:stream_tags=language,title",
             "-of", "csv=p=0",
             &path.to_string_lossy(),
         ])
@@ -209,13 +346,14 @@ async fn probe_video(path: &Path) -> (String, String, String) {
 
     let output = match output {
         Ok(o) => o,
-        Err(_) => return ("unknown".into(), "unknown".into(), "".into()),
+        Err(_) => return ("unknown".into(), "unknown".into(), "".into(), vec![]),
     };
 
     let text = String::from_utf8_lossy(&output.stdout);
     let mut video_codec = String::new();
     let mut audio_codec = String::new();
     let mut resolution = String::new();
+    let mut embedded_subs = Vec::new();
 
     for line in text.lines() {
         let parts: Vec<&str> = line.split(',').collect();
@@ -227,12 +365,24 @@ async fn probe_video(path: &Path) -> (String, String, String) {
                 if parts.len() >= 4 {
                     let w = parts[2].trim();
                     let h = parts[3].trim();
-                    if !w.is_empty() && !h.is_empty() {
+                    if !w.is_empty() && !h.is_empty() && w != "N/A" {
                         resolution = format!("{}x{}", w, h);
                     }
                 }
             } else if ctype == "audio" && audio_codec.is_empty() {
                 audio_codec = codec.to_string();
+            } else if ctype == "subtitle" {
+                // Try to get language tag
+                let lang = parts.get(4).unwrap_or(&"und").trim();
+                let title = parts.get(5).unwrap_or(&"").trim();
+                let label = if !title.is_empty() {
+                    format!("{} ({})", title, codec)
+                } else if lang != "und" && !lang.is_empty() {
+                    format!("{} ({})", lang_name(lang), codec)
+                } else {
+                    format!("Track {} ({})", embedded_subs.len() + 1, codec)
+                };
+                embedded_subs.push(label);
             }
         }
     }
@@ -240,7 +390,7 @@ async fn probe_video(path: &Path) -> (String, String, String) {
     if video_codec.is_empty() { video_codec = "unknown".into(); }
     if audio_codec.is_empty() { audio_codec = "unknown".into(); }
 
-    (video_codec, audio_codec, resolution)
+    (video_codec, audio_codec, resolution, embedded_subs)
 }
 
 fn format_size(bytes: u64) -> String {

@@ -25,6 +25,19 @@
     .video-js .vjs-play-progress { background: #e50914 !important; }
     .video-js .vjs-slider:focus { box-shadow: none !important; }
     .video-js .vjs-control-bar { background: rgba(0,0,0,0.7) !important; }
+    /* TV menu */
+    .tv-menu-btn {
+      display: block; width: 100%; padding: 14px 20px; margin-bottom: 4px;
+      background: #1a1a1a; border: 2px solid transparent; border-radius: 8px;
+      color: #e5e5e5; font-size: 15px; text-align: left; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tv-menu-btn:focus, .tv-menu-btn.tv-focused {
+      background: #e50914; border-color: #fff; color: #fff; outline: none;
+    }
+    .tv-menu-btn.tv-active {
+      background: #2a2a2a; border-color: #e50914;
+    }
   </style>
 </head>
 <body class="min-h-screen">
@@ -115,11 +128,56 @@
 </div>
 
 <!-- Video Player Modal -->
-<div id="player-modal" class="fixed inset-0 z-50 bg-black hidden">
+<div id="player-modal" class="fixed inset-0 z-50 bg-black hidden" tabindex="0">
+  <!-- Desktop close button (hidden on TV) -->
   <button id="player-close-btn" onclick="closePlayer()" class="absolute top-4 right-6 z-50 text-3xl text-white hover:text-red-500 hidden" style="text-shadow:0 0 8px black">&times;</button>
-  <button id="player-subs-btn" onclick="openSubsFromPlayer()" class="absolute top-4 left-6 z-50 text-sm text-white bg-black/50 hover:bg-black/80 px-3 py-1 rounded hidden" style="text-shadow:0 0 8px black">Subtitles</button>
   <div id="player-container" style="width:100%;height:100%">
-    <video id="video-player" class="video-js vjs-default-skin vjs-big-play-centered" controls preload="auto" crossorigin="anonymous" style="width:100%;height:100%"></video>
+    <video id="video-player" class="video-js vjs-default-skin vjs-big-play-centered" preload="auto" crossorigin="anonymous" style="width:100%;height:100%"></video>
+  </div>
+  <!-- TV pause menu -->
+  <div id="tv-menu" class="absolute inset-0 z-50 hidden flex items-center justify-center" style="background:rgba(0,0,0,0.85)">
+    <div class="w-80">
+      <div id="tv-menu-items">
+        <button class="tv-menu-btn" data-action="resume">Resume</button>
+        <button class="tv-menu-btn" data-action="subtitles">Subtitles</button>
+        <button class="tv-menu-btn" data-action="speed">Playback Speed</button>
+        <button class="tv-menu-btn" data-action="exit">Exit Movie</button>
+      </div>
+      <!-- Subtitle picker -->
+      <div id="tv-menu-subs" class="hidden">
+        <p class="text-neutral-400 text-sm mb-3 text-center">Subtitles</p>
+        <div id="tv-subs-list"></div>
+      </div>
+      <!-- Speed picker -->
+      <div id="tv-menu-speed" class="hidden">
+        <p class="text-neutral-400 text-sm mb-3 text-center">Playback Speed</p>
+        <div id="tv-speed-list"></div>
+      </div>
+    </div>
+  </div>
+  <!-- TV overlay (custom controls for D-pad) -->
+  <div id="tv-overlay" class="absolute inset-0 z-40 hidden" style="pointer-events:none">
+    <!-- Seek indicator -->
+    <div id="tv-seek-indicator" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-5xl text-white font-bold hidden" style="text-shadow:0 0 20px black"></div>
+    <!-- Bottom bar -->
+    <div class="absolute bottom-0 left-0 right-0 p-6" style="background:linear-gradient(transparent, rgba(0,0,0,0.85))">
+      <div id="tv-title" class="text-lg font-semibold mb-3 truncate" style="text-shadow:0 0 8px black"></div>
+      <div class="flex items-center gap-3 mb-2">
+        <span id="tv-time" class="text-sm text-neutral-300 font-mono w-24">00:00:00</span>
+        <div class="flex-1 bg-neutral-700 rounded-full h-1.5 relative">
+          <div id="tv-progress" class="bg-red-600 h-full rounded-full" style="width:0%"></div>
+          <div id="tv-progress-dot" class="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-red-500 rounded-full border-2 border-white" style="left:0%"></div>
+        </div>
+        <span id="tv-duration" class="text-sm text-neutral-500 font-mono w-24 text-right">00:00:00</span>
+      </div>
+      <div class="flex justify-center gap-6 text-neutral-400 text-xs mt-2">
+        <span>&#9664; 10s</span>
+        <span>&#9650; 1m</span>
+        <span>OK Play/Pause</span>
+        <span>&#9660; 1m</span>
+        <span>10s &#9654;</span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -292,6 +350,7 @@ function torrentRow(t) {
           <span class="text-red-400">${t.leeches} leeches</span> ·
           ${t.size} ·
           <span class="text-neutral-600">${t.source}</span>
+          ${t.has_subs ? ' · <span class="text-green-400">CC</span>' : ''}
         </div>
       </div>
       ${btn}
@@ -447,11 +506,22 @@ async function refreshLibrary() {
         ? `<span class="text-green-500">${f.video_codec.toUpperCase()}</span>`
         : `<span class="text-amber-500">${f.video_codec.toUpperCase()}</span>`;
       const hlsBadge = f.hls_path ? '<span class="text-green-400 ml-1">HLS</span>' : '';
-      const playArgs = `'${esc(f.path)}', ${f.has_subs ? `'${esc(f.srt_path)}'` : 'null'}, '${esc(f.filename)}', '${esc(f.source)}', ${f.browser_playable}, ${f.hls_path ? `'${esc(f.hls_path)}'` : 'null'}`;
+      const extSubCount = (f.subtitle_tracks || []).length;
+      const embSubCount = (f.embedded_subs || []).length;
+      const totalSubs = extSubCount + embSubCount;
+      const subLabel = totalSubs > 0 ? `<span class="text-green-500">CC:${totalSubs}</span>` : '';
+      // Store file data for the player
+      const fileIdx = i;
+      window._libFiles = window._libFiles || [];
+      window._libFiles[fileIdx] = f;
+      const wp = getWatchProgress(f.filename);
+      const wpPct = wp ? (wp.time / wp.duration * 100).toFixed(1) : 0;
+      const wpLabel = wp ? `${fmtTime(wp.time)} / ${fmtTime(wp.duration)}` : '';
       return `
-      <div class="flex items-center justify-between bg-neutral-900 rounded-lg px-4 py-3 hover:bg-neutral-800 transition gap-3">
+      <div class="bg-neutral-900 rounded-lg hover:bg-neutral-800 transition overflow-hidden">
+       <div class="flex items-center justify-between px-4 py-3 gap-3">
         <div style="width:4px;height:42px;border-radius:2px;background:${color};flex-shrink:0"></div>
-        <div class="min-w-0 flex-1 cursor-pointer" onclick="playVideo(${playArgs})">
+        <div class="min-w-0 flex-1 cursor-pointer" onclick="playFromLib(${fileIdx})">
           <div class="text-sm font-medium truncate">${esc(f.filename)}</div>
           <div class="text-xs text-neutral-500 mt-1 flex flex-wrap gap-x-2">
             <span>${f.size_display}</span>
@@ -461,13 +531,21 @@ async function refreshLibrary() {
             ${f.resolution ? `<span class="text-neutral-600">${f.resolution}</span>` : ''}
             <span class="text-neutral-600">.${f.container}</span>
             ${hlsBadge}
-            ${f.has_subs ? '<span class="text-green-500">CC</span>' : ''}
+            ${subLabel}
+            ${embSubCount > 0 ? `<span class="text-blue-400" title="${f.embedded_subs.join(', ')}">EMB:${embSubCount}</span>` : ''}
           </div>
         </div>
         <button onclick="openSubSearch('${esc(f.filename)}', '${esc(f.path)}')" class="text-xs px-2 py-1 rounded ${f.has_subs ? 'bg-green-800 text-green-200' : 'bg-neutral-700 text-neutral-300'} hover:bg-neutral-600 transition whitespace-nowrap" title="Get subtitles">
           ${f.has_subs ? 'CC' : 'Subs'}
         </button>
-        <span class="text-red-500 text-lg cursor-pointer" onclick="playVideo(${playArgs})">▶</span>
+        <span class="text-red-500 text-lg cursor-pointer" onclick="playFromLib(${fileIdx})">▶</span>
+       </div>
+       ${wp ? `<div class="px-4 pb-2 flex items-center gap-2">
+         <div class="flex-1 bg-neutral-800 rounded-full h-1 overflow-hidden">
+           <div class="bg-red-600 h-full rounded-full" style="width:${wpPct}%"></div>
+         </div>
+         <span class="text-xs text-neutral-500">${wpLabel}</span>
+       </div>` : ''}
       </div>`;
     }).join('');
   } catch(e) {
@@ -482,21 +560,22 @@ function encodePath(p) {
 
 let vjsPlayer = null;
 let currentPlayFile = null;
+const isTV = /pizerarr-tv|AFT|AFTM|AFTT|AFTS|Android TV/i.test(navigator.userAgent);
+let tvOverlayTimeout = null;
 
 function initPlayer() {
   if (vjsPlayer) return;
-  const isTV = /pizerarr-tv|Android TV|AFT/i.test(navigator.userAgent);
   try {
     vjsPlayer = videojs('video-player', {
-      controls: true,
+      controls: !isTV, // TV uses custom overlay, desktop uses video.js controls
       autoplay: false,
       preload: 'auto',
       playbackRates: [0.5, 1, 1.25, 1.5, 2],
-      controlBar: {
-        volumePanel: isTV ? false : { inline: true },
+      controlBar: isTV ? false : {
+        volumePanel: { inline: true },
         children: [
           'playToggle',
-          ...(isTV ? ['muteToggle'] : ['volumePanel']),
+          'volumePanel',
           'currentTimeDisplay',
           'timeDivider',
           'durationDisplay',
@@ -512,10 +591,314 @@ function initPlayer() {
         nativeVideoTracks: false,
       },
     });
+
+    if (isTV) {
+      vjsPlayer.on('timeupdate', updateTvOverlay);
+    }
+    // Save watch progress every 5 seconds
+    vjsPlayer.on('timeupdate', saveWatchProgress);
   } catch(e) {
     console.error('video.js init failed:', e);
     vjsPlayer = null;
   }
+}
+
+// --- TV Overlay ---
+function showTvOverlay() {
+  if (!isTV) return;
+  $('#tv-overlay').classList.remove('hidden');
+  clearTimeout(tvOverlayTimeout);
+  tvOverlayTimeout = setTimeout(() => {
+    $('#tv-overlay').classList.add('hidden');
+    hideTvSeekIndicator();
+  }, 4000);
+}
+
+function hideTvOverlay() {
+  $('#tv-overlay').classList.add('hidden');
+  clearTimeout(tvOverlayTimeout);
+}
+
+function updateTvOverlay() {
+  if (!vjsPlayer) return;
+  const cur = vjsPlayer.currentTime() || 0;
+  const dur = vjsPlayer.duration() || 1;
+  const pct = (cur / dur * 100).toFixed(2);
+  $('#tv-time').textContent = fmtTime(cur);
+  $('#tv-duration').textContent = fmtTime(dur);
+  $('#tv-progress').style.width = pct + '%';
+  $('#tv-progress-dot').style.left = pct + '%';
+}
+
+function fmtTime(s) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+function showTvSeekIndicator(text) {
+  const el = $('#tv-seek-indicator');
+  el.textContent = text;
+  el.classList.remove('hidden');
+  clearTimeout(el._hideTimer);
+  el._hideTimer = setTimeout(() => el.classList.add('hidden'), 800);
+}
+
+function hideTvSeekIndicator() {
+  $('#tv-seek-indicator').classList.add('hidden');
+}
+
+// --- Watch Progress ---
+let _lastSaveTime = 0;
+function saveWatchProgress() {
+  if (!vjsPlayer || !currentPlayFile) return;
+  const now = Date.now();
+  if (now - _lastSaveTime < 5000) return; // save every 5s max
+  _lastSaveTime = now;
+  const cur = vjsPlayer.currentTime();
+  const dur = vjsPlayer.duration();
+  if (!dur || dur < 1) return;
+  const key = 'wp:' + currentPlayFile.filename;
+  localStorage.setItem(key, JSON.stringify({ time: cur, duration: dur, ts: now }));
+}
+
+function getWatchProgress(filename) {
+  try {
+    const data = JSON.parse(localStorage.getItem('wp:' + filename));
+    if (data && data.duration > 0) return data;
+  } catch(e) {}
+  return null;
+}
+
+function resumeIfNeeded() {
+  if (!vjsPlayer || !currentPlayFile) return;
+  const p = getWatchProgress(currentPlayFile.filename);
+  if (p && p.time > 10 && p.time < p.duration - 30) {
+    vjsPlayer.currentTime(p.time);
+  }
+}
+
+// --- TV Menu ---
+let tvMenuOpen = false;
+let tvMenuFocusIdx = 0;
+let tvMenuMode = 'main'; // 'main', 'subs', 'speed'
+
+function openTvMenu() {
+  if (!vjsPlayer) return;
+  vjsPlayer.pause();
+  tvMenuOpen = true;
+  tvMenuMode = 'main';
+  tvMenuFocusIdx = 0;
+  hideTvOverlay();
+
+  $('#tv-menu-items').classList.remove('hidden');
+  $('#tv-menu-subs').classList.add('hidden');
+  $('#tv-menu-speed').classList.add('hidden');
+  $('#tv-menu').classList.remove('hidden');
+  updateTvMenuFocus();
+}
+
+function closeTvMenu() {
+  tvMenuOpen = false;
+  $('#tv-menu').classList.add('hidden');
+}
+
+function openTvSubsMenu() {
+  tvMenuMode = 'subs';
+  tvMenuFocusIdx = 0;
+  $('#tv-menu-items').classList.add('hidden');
+  $('#tv-menu-subs').classList.remove('hidden');
+
+  // Build subtitle track list
+  const tracks = vjsPlayer.remoteTextTracks();
+  let html = '<button class="tv-menu-btn" data-subidx="-1">Off</button>';
+  for (let i = 0; i < tracks.length; i++) {
+    const t = tracks[i];
+    const active = t.mode === 'showing';
+    html += `<button class="tv-menu-btn ${active ? 'tv-active' : ''}" data-subidx="${i}">${t.label || 'Track ' + (i+1)}</button>`;
+  }
+  if (tracks.length === 0) {
+    html += '<p class="text-neutral-500 text-sm text-center py-4">No subtitle tracks loaded.<br>Add subs from the Library tab.</p>';
+  }
+  $('#tv-subs-list').innerHTML = html;
+  updateTvMenuFocus();
+}
+
+function openTvSpeedMenu() {
+  tvMenuMode = 'speed';
+  tvMenuFocusIdx = 0;
+  $('#tv-menu-items').classList.add('hidden');
+  $('#tv-menu-speed').classList.remove('hidden');
+
+  const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2];
+  const current = vjsPlayer.playbackRate();
+  let html = '';
+  speeds.forEach((s, i) => {
+    const active = Math.abs(current - s) < 0.01;
+    const label = s === 1 ? 'Normal' : s + 'x';
+    html += `<button class="tv-menu-btn ${active ? 'tv-active' : ''}" data-speed="${s}">${label}</button>`;
+    if (active) tvMenuFocusIdx = i;
+  });
+  $('#tv-speed-list').innerHTML = html;
+  updateTvMenuFocus();
+}
+
+function getTvMenuButtons() {
+  if (tvMenuMode === 'main') return [...$$('#tv-menu-items .tv-menu-btn')];
+  if (tvMenuMode === 'subs') return [...$$('#tv-subs-list .tv-menu-btn')];
+  if (tvMenuMode === 'speed') return [...$$('#tv-speed-list .tv-menu-btn')];
+  return [];
+}
+
+function updateTvMenuFocus() {
+  const btns = getTvMenuButtons();
+  btns.forEach((b, i) => b.classList.toggle('tv-focused', i === tvMenuFocusIdx));
+}
+
+function tvMenuSelect() {
+  const btns = getTvMenuButtons();
+  const btn = btns[tvMenuFocusIdx];
+  if (!btn) return;
+
+  if (tvMenuMode === 'main') {
+    const action = btn.dataset.action;
+    if (action === 'resume') { closeTvMenu(); vjsPlayer.play(); }
+    else if (action === 'subtitles') { openTvSubsMenu(); }
+    else if (action === 'speed') { openTvSpeedMenu(); }
+    else if (action === 'exit') { closeTvMenu(); closePlayer(); }
+  } else if (tvMenuMode === 'subs') {
+    const idx = parseInt(btn.dataset.subidx);
+    const tracks = vjsPlayer.remoteTextTracks();
+    for (let i = 0; i < tracks.length; i++) {
+      tracks[i].mode = (i === idx) ? 'showing' : 'disabled';
+    }
+    // Go back to main menu
+    tvMenuMode = 'main';
+    tvMenuFocusIdx = 1; // focus subtitles option
+    $('#tv-menu-subs').classList.add('hidden');
+    $('#tv-menu-items').classList.remove('hidden');
+    updateTvMenuFocus();
+  } else if (tvMenuMode === 'speed') {
+    const speed = parseFloat(btn.dataset.speed);
+    vjsPlayer.playbackRate(speed);
+    tvMenuMode = 'main';
+    tvMenuFocusIdx = 2; // focus speed option
+    $('#tv-menu-speed').classList.add('hidden');
+    $('#tv-menu-items').classList.remove('hidden');
+    updateTvMenuFocus();
+  }
+}
+
+function handleTvMenuKey(e) {
+  const key = e.key;
+  const btns = getTvMenuButtons();
+  if (key === 'ArrowUp') {
+    tvMenuFocusIdx = Math.max(0, tvMenuFocusIdx - 1);
+    updateTvMenuFocus();
+  } else if (key === 'ArrowDown') {
+    tvMenuFocusIdx = Math.min(btns.length - 1, tvMenuFocusIdx + 1);
+    updateTvMenuFocus();
+  } else if (key === 'Enter' || key === ' ') {
+    tvMenuSelect();
+  } else if (key === 'Escape' || key === 'Backspace') {
+    if (tvMenuMode !== 'main') {
+      // Go back to main menu
+      tvMenuMode = 'main';
+      tvMenuFocusIdx = 0;
+      $('#tv-menu-subs').classList.add('hidden');
+      $('#tv-menu-speed').classList.add('hidden');
+      $('#tv-menu-items').classList.remove('hidden');
+      updateTvMenuFocus();
+    } else {
+      closeTvMenu();
+      vjsPlayer.play();
+    }
+  }
+  e.preventDefault();
+  return true;
+}
+
+function handlePlayerKey(e) {
+  if (!vjsPlayer || $('#player-modal').classList.contains('hidden')) return false;
+
+  // TV menu takes priority
+  if (tvMenuOpen) return handleTvMenuKey(e);
+
+  const key = e.key || e.code;
+  switch(key) {
+    case 'Escape':
+    case 'Backspace':
+      // Open TV menu instead of closing player
+      openTvMenu();
+      e.preventDefault();
+      return true;
+    case 'ArrowLeft':
+      vjsPlayer.currentTime(Math.max(0, vjsPlayer.currentTime() - 10));
+      showTvSeekIndicator('◀◀ 10s');
+      showTvOverlay();
+      e.preventDefault();
+      return true;
+    case 'ArrowRight':
+      vjsPlayer.currentTime(Math.min(vjsPlayer.duration(), vjsPlayer.currentTime() + 10));
+      showTvSeekIndicator('10s ▶▶');
+      showTvOverlay();
+      e.preventDefault();
+      return true;
+    case 'ArrowUp':
+      vjsPlayer.currentTime(Math.max(0, vjsPlayer.currentTime() - 60));
+      showTvSeekIndicator('◀◀ 1m');
+      showTvOverlay();
+      e.preventDefault();
+      return true;
+    case 'ArrowDown':
+      vjsPlayer.currentTime(Math.min(vjsPlayer.duration(), vjsPlayer.currentTime() + 60));
+      showTvSeekIndicator('1m ▶▶');
+      showTvOverlay();
+      e.preventDefault();
+      return true;
+    case 'Enter':
+    case ' ':
+      if (vjsPlayer.paused()) {
+        vjsPlayer.play();
+        showTvSeekIndicator('▶');
+      } else {
+        vjsPlayer.pause();
+        showTvSeekIndicator('⏸');
+      }
+      showTvOverlay();
+      e.preventDefault();
+      return true;
+    default:
+      showTvOverlay();
+      return false;
+  }
+}
+
+function playFromLib(idx) {
+  const f = window._libFiles[idx];
+  if (!f) return;
+  currentPlayFile = {
+    path: f.path,
+    srtPath: null,
+    filename: f.filename,
+    source: f.source,
+    browserPlayable: f.browser_playable,
+    hlsPath: f.hls_path || null,
+    subtitleTracks: f.subtitle_tracks || [],
+  };
+
+  if (f.hls_path) {
+    startPlayer('/media/' + encodePath(f.hls_path), 'application/x-mpegURL');
+    return;
+  }
+  if (f.browser_playable) {
+    const ext = f.filename.split('.').pop().toLowerCase();
+    const types = { mp4: 'video/mp4', webm: 'video/webm', m4v: 'video/mp4' };
+    startPlayer('/media/' + encodePath(f.path), types[ext] || 'video/mp4');
+    return;
+  }
+  showPlayOptions();
 }
 
 function playVideo(path, srtPath, filename, source, browserPlayable, hlsPath) {
@@ -563,23 +946,43 @@ function startPlayer(src, type, srtPath) {
 
       vjsPlayer.src({ src, type });
 
-      if (srtPath) {
+      // Add all subtitle tracks (converted to VTT server-side)
+      const tracks = (currentPlayFile && currentPlayFile.subtitleTracks) || [];
+      if (tracks.length > 0) {
+        tracks.forEach((t, i) => {
+          vjsPlayer.addRemoteTextTrack({
+            kind: 'subtitles',
+            label: t.label,
+            srclang: t.lang || 'en',
+            src: '/api/subs/vtt?path=' + encodeURIComponent(t.path),
+            default: i === 0,
+          }, false);
+        });
+      } else if (srtPath) {
         vjsPlayer.addRemoteTextTrack({
           kind: 'subtitles',
           label: 'English',
           srclang: 'en',
-          src: '/media/' + encodePath(srtPath),
+          src: '/api/subs/vtt?path=' + encodeURIComponent(srtPath),
           default: true,
         }, false);
       }
 
+      vjsPlayer.one('loadedmetadata', resumeIfNeeded);
       vjsPlayer.play().catch(() => {});
-      setTimeout(() => vjsPlayer.el().focus(), 200);
 
-      // Show close + subs buttons on non-TV
-      const isTV = /pizerarr-tv|AFT/i.test(navigator.userAgent);
-      $('#player-close-btn').classList.toggle('hidden', isTV);
-      $('#player-subs-btn').classList.remove('hidden');
+      if (isTV) {
+        // TV mode: show custom overlay, focus the modal for key capture
+        if (currentPlayFile) {
+          $('#tv-title').textContent = currentPlayFile.filename.replace(/\.[^.]+$/, '').replace(/[\._]/g, ' ');
+        }
+        showTvOverlay();
+        setTimeout(() => $('#player-modal').focus(), 200);
+      } else {
+        // Desktop: show close button, let video.js handle controls
+        $('#player-close-btn').classList.remove('hidden');
+        setTimeout(() => vjsPlayer.el().focus(), 200);
+      }
     } else {
       // Fallback: raw <video> element if video.js failed to load
       const el = $('#video-player');
@@ -591,7 +994,16 @@ function startPlayer(src, type, srtPath) {
 
 // Called from Android back button — returns true if something was closed
 function handleBack() {
-  // Close player if open
+  // TV menu open — let handlePlayerKey deal with it
+  if (tvMenuOpen && isTV) {
+    return true; // already handled by handleTvMenuKey
+  }
+  // Player open on TV — open menu instead of closing
+  if (!$('#player-modal').classList.contains('hidden') && isTV) {
+    openTvMenu();
+    return true;
+  }
+  // Player open on desktop — close it
   if (!$('#player-modal').classList.contains('hidden')) {
     closePlayer();
     return true;
@@ -612,6 +1024,8 @@ function handleBack() {
 function closePlayer() {
   if (vjsPlayer) {
     try {
+      _lastSaveTime = 0; // force save
+      saveWatchProgress();
       vjsPlayer.pause();
       vjsPlayer.reset();
     } catch(e) {}
@@ -621,7 +1035,7 @@ function closePlayer() {
   }
   $('#player-modal').classList.add('hidden');
   $('#player-close-btn').classList.add('hidden');
-  $('#player-subs-btn').classList.add('hidden');
+  hideTvOverlay();
 }
 
 // --- Play Options Popup ---
@@ -791,7 +1205,7 @@ async function downloadSub(btn, downloadUrl) {
         } catch(e) {}
         vjsPlayer.addRemoteTextTrack({
           kind: 'subtitles', label: 'English', srclang: 'en',
-          src: '/media/' + encodePath(srtPath), default: true,
+          src: '/api/subs/vtt?path=' + encodeURIComponent(srtPath), default: true,
         }, false);
       }
     } else {
@@ -817,6 +1231,13 @@ function formatBytes(b) {
 
 // --- Keyboard ---
 document.addEventListener('keydown', (e) => {
+  // TV player controls take priority when player is open
+  if (!$('#player-modal').classList.contains('hidden') && isTV) {
+    if (e.key === 'Escape' || e.key === 'Backspace') {
+      if (handleBack()) { e.preventDefault(); return; }
+    }
+    if (handlePlayerKey(e)) return;
+  }
   if (e.key === 'Escape' || e.key === 'Backspace') {
     if (handleBack()) e.preventDefault();
   }

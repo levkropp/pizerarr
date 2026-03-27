@@ -10,6 +10,14 @@ pub struct SearchResult {
     pub leeches: u32,
     pub size: String,
     pub source: String,
+    pub has_subs: bool,
+}
+
+fn detect_subs_in_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("subs") || lower.contains("subtitle") || lower.contains(".srt")
+        || lower.contains("subbed") || lower.contains("multi.sub")
+        || lower.contains("multisub") || lower.contains("eng.sub")
 }
 
 // --------------- YTS (movies, JSON API) ---------------
@@ -56,14 +64,17 @@ pub async fn search_yts(client: &reqwest::Client, query: &str) -> Result<Vec<Sea
                         torrent.hash,
                         urlencoding::encode(&movie.title_long)
                     );
+                    let title = format!("{} [{}]", movie.title_long, torrent.quality);
+                    let has_subs = detect_subs_in_name(&title);
                     results.push(SearchResult {
-                        title: format!("{} [{}]", movie.title_long, torrent.quality),
+                        title,
                         magnet: Some(magnet),
                         detail_url: None,
                         seeds: torrent.seeds,
                         leeches: torrent.peers,
                         size: torrent.size.clone(),
                         source: "YTS".to_string(),
+                        has_subs,
                     });
                 }
             }
@@ -109,6 +120,7 @@ pub async fn search_eztv(client: &reqwest::Client, query: &str) -> Result<Vec<Se
     let mut results = Vec::new();
     if let Some(torrents) = resp.torrents {
         for t in torrents {
+            let has_subs = detect_subs_in_name(&t.title);
             results.push(SearchResult {
                 title: t.title,
                 magnet: Some(t.magnet_url),
@@ -117,6 +129,7 @@ pub async fn search_eztv(client: &reqwest::Client, query: &str) -> Result<Vec<Se
                 leeches: t.peers,
                 size: format_bytes(&t.size_bytes),
                 source: "EZTV".to_string(),
+                has_subs,
             });
         }
     }
@@ -181,14 +194,16 @@ pub async fn search_1337x(client: &reqwest::Client, query: &str) -> Result<Vec<S
             None
         };
 
+        let has_subs = detect_subs_in_name(&title);
         results.push(SearchResult {
             title,
-            magnet: None, // need to fetch detail page
+            magnet: None,
             detail_url,
             seeds,
             leeches,
             size,
             source: "1337x".to_string(),
+            has_subs,
         });
     }
     Ok(results)
@@ -242,6 +257,7 @@ pub async fn search_piratebay(client: &reqwest::Client, query: &str) -> Result<V
                 r.info_hash,
                 urlencoding::encode(&r.name)
             );
+            let has_subs = detect_subs_in_name(&r.name);
             SearchResult {
                 title: r.name,
                 magnet: Some(magnet),
@@ -250,6 +266,7 @@ pub async fn search_piratebay(client: &reqwest::Client, query: &str) -> Result<V
                 leeches: r.leechers.parse().unwrap_or(0),
                 size: format_bytes(&r.size),
                 source: "TPB".to_string(),
+                has_subs,
             }
         })
         .collect())

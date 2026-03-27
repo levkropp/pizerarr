@@ -36,6 +36,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/transcode", post(api_start_transcode))
         .route("/api/transcode/status", get(api_transcode_status))
         .route("/api/transcode/cancel", post(api_cancel_transcode))
+        .route("/api/subs/vtt", get(api_srt_to_vtt))
         .route("/static/{*path}", get(serve_static))
         .nest_service("/media/dl", ServeDir::new(state.download_dir.clone()))
         .nest_service("/media", ServeDir::new(state.media_dir.clone()))
@@ -225,6 +226,125 @@ async fn api_fetch_1337x_magnet(Query(params): Query<MagnetQuery>) -> Response {
 async fn api_library(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let lib = state.library.read().await;
     Json(lib.clone())
+}
+
+// --- SRT to VTT conversion ---
+
+#[derive(Deserialize)]
+struct VttQuery {
+    path: String,
+}
+
+async fn api_srt_to_vtt(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<VttQuery>,
+) -> Response {
+    let file_path = if let Some(rel) = params.path.strip_prefix("dl/") {
+        state.download_dir.join(rel)
+    } else {
+        state.media_dir.join(&params.path)
+    };
+
+    let content = match tokio::fs::read_to_string(&file_path).await {
+        Ok(c) => c,
+        Err(_) => {
+            return (StatusCode::NOT_FOUND, "subtitle file not found").into_response();
+        }
+    };
+
+    let ext = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let vtt = match ext.as_str() {
+        "vtt" => content,
+        "srt" => srt_to_vtt(&content),
+        "ass" | "ssa" => ass_to_vtt(&content),
+        _ => srt_to_vtt(&content),
+    };
+
+    (
+        [(header::CONTENT_TYPE, "text/vtt; charset=utf-8")],
+        vtt,
+    )
+        .into_response()
+}
+
+fn srt_to_vtt(srt: &str) -> String {
+    let mut vtt = String::from("WEBVTT\n\n");
+    for line in srt.lines() {
+        // SRT uses comma for milliseconds, VTT uses dot
+        if line.contains(" --> ") {
+            vtt.push_str(&line.replace(',', "."));
+        } else {
+            vtt.push_str(line);
+        }
+        vtt.push('\n');
+    }
+    vtt
+}
+
+fn ass_to_vtt(ass: &str) -> String {
+    let mut vtt = String::from("WEBVTT\n\n");
+    let mut count = 1;
+    for line in ass.lines() {
+        if !line.starts_with("Dialogue:") {
+            continue;
+        }
+        // Format: Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+        let parts: Vec<&str> = line.splitn(10, ',').collect();
+        if parts.len() < 10 {
+            continue;
+        }
+        let start = ass_time_to_vtt(parts[1].trim());
+        let end = ass_time_to_vtt(parts[2].trim());
+        let text = parts[9]
+            .replace("\\N", "\n")
+            .replace("\\n", "\n")
+            .replace("{\\an8}", "")
+            .replace("{\\pos(", "");
+        // Strip other ASS override tags
+        let text = strip_ass_tags(&text);
+        if text.trim().is_empty() {
+            continue;
+        }
+        vtt.push_str(&format!("{}\n{} --> {}\n{}\n\n", count, start, end, text));
+        count += 1;
+    }
+    vtt
+}
+
+fn ass_time_to_vtt(t: &str) -> String {
+    // ASS: H:MM:SS.CC -> VTT: HH:MM:SS.mmm
+    let parts: Vec<&str> = t.split(':').collect();
+    if parts.len() == 3 {
+        let h = parts[0];
+        let m = parts[1];
+        let sec_parts: Vec<&str> = parts[2].split('.').collect();
+        let s = sec_parts.first().unwrap_or(&"00");
+        let cs = sec_parts.get(1).unwrap_or(&"00");
+        let ms: u32 = cs.parse::<u32>().unwrap_or(0) * 10;
+        format!("{:0>2}:{:0>2}:{:0>2}.{:03}", h, m, s, ms)
+    } else {
+        t.to_string()
+    }
+}
+
+fn strip_ass_tags(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        if c == '{' {
+            in_tag = true;
+        } else if c == '}' {
+            in_tag = false;
+        } else if !in_tag {
+            out.push(c);
+        }
+    }
+    out
 }
 
 // --- Transcode ---

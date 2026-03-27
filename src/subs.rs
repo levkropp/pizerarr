@@ -6,7 +6,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
-const OS_BASE: &str = "https://rest.opensubtitles.org/search/query-";
+// Use local Python proxy to avoid vendored OpenSSL CA issues
+const OS_BASE: &str = "http://127.0.0.1:9191/search/query-";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtitleResult {
@@ -91,29 +92,20 @@ async fn fetch_from_api(
         .collect())
 }
 
-/// Download a subtitle .gz from OpenSubtitles, decompress, save next to video
+/// Download a subtitle via the local proxy, save next to video
 pub async fn download_to(
     client: &reqwest::Client,
     download_url: &str,
     save_path: &Path,
 ) -> Result<()> {
-    let bytes = client
-        .get(download_url)
-        .header("User-Agent", UA)
+    // POST the download URL to the local proxy which fetches + decompresses
+    let srt = client
+        .post("http://127.0.0.1:9191/download")
+        .body(download_url.to_string())
         .send()
         .await?
-        .bytes()
+        .text()
         .await?;
-
-    use std::io::Read;
-    let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
-    let mut srt = String::new();
-    match decoder.read_to_string(&mut srt) {
-        Ok(_) => {}
-        Err(_) => {
-            srt = String::from_utf8_lossy(&bytes).to_string();
-        }
-    }
 
     tokio::fs::write(save_path, &srt).await?;
     Ok(())
